@@ -31,6 +31,7 @@ local SetViewMode
 local SetDetailPanelOpen
 local ApplyMailSwapVisibility
 local SetStatusText
+local UpdateSendAttachmentPreview
 
 local THEMES = {
 	Horde = {
@@ -525,6 +526,18 @@ ApplyThemeToUI = function()
 	if GM.UI.sendSubjectLabel then
 		GM.UI.sendSubjectLabel:SetTextColor(unpack(THEME_TEXT.header))
 	end
+	if GM.UI.sendGoldLabel then
+		GM.UI.sendGoldLabel:SetTextColor(unpack(THEME_TEXT.header))
+	end
+	if GM.UI.sendAttachmentLabel then
+		GM.UI.sendAttachmentLabel:SetTextColor(unpack(THEME_TEXT.header))
+	end
+	if GM.UI.sendCODLabel then
+		GM.UI.sendCODLabel:SetTextColor(unpack(THEME_TEXT.header))
+	end
+	if GM.UI.sendCODAmountLabel then
+		GM.UI.sendCODAmountLabel:SetTextColor(unpack(THEME_TEXT.header))
+	end
 	if GM.UI.sendBodyLabel then
 		GM.UI.sendBodyLabel:SetTextColor(unpack(THEME_TEXT.header))
 	end
@@ -534,8 +547,21 @@ ApplyThemeToUI = function()
 	if GM.UI.sendSubjectInput then
 		GM.UI.sendSubjectInput:SetTextColor(unpack(THEME_TEXT.detailBody))
 	end
+	if GM.UI.sendGoldInput then
+		GM.UI.sendGoldInput:SetTextColor(unpack(THEME_TEXT.detailBody))
+	end
+	if GM.UI.sendAttachmentNameText then
+		GM.UI.sendAttachmentNameText:SetTextColor(unpack(THEME_TEXT.detailBody))
+	end
+	if GM.UI.sendCODInput then
+		GM.UI.sendCODInput:SetTextColor(unpack(THEME_TEXT.detailBody))
+	end
 	if GM.UI.sendBodyInput then
 		GM.UI.sendBodyInput:SetTextColor(unpack(THEME_TEXT.detailBody))
+	end
+	if GM.UI.sendAttachmentSlot then
+		GM.UI.sendAttachmentSlot:SetBackdropColor(unpack(THEME.detailBodyBg))
+		GM.UI.sendAttachmentSlot:SetBackdropBorderColor(unpack(THEME.detailBodyBorder))
 	end
 	if GM.UI.headerCells then
 		for i = 1, #GM.UI.headerCells do
@@ -689,6 +715,58 @@ local function SetDefaultInboxInteractionEnabled(enabled)
 	end
 end
 
+local function SetDefaultMailPanelManaged(enabled)
+	if not MailFrame or not MailFrame.SetAttribute then
+		return
+	end
+	MailFrame:SetAttribute("UIPanelLayout-enabled", enabled and true or false)
+	if UpdateUIPanelPositions then
+		UpdateUIPanelPositions()
+	end
+end
+
+local function SetDefaultMailPanelWindowRegistered(enabled)
+	if not UIPanelWindows then
+		return
+	end
+
+	if enabled then
+		if GM.UI and GM.UI.mailFrameUIPanelWindowsStashed then
+			UIPanelWindows["MailFrame"] = GM.UI.mailFrameUIPanelWindowsEntry
+			GM.UI.mailFrameUIPanelWindowsEntry = nil
+			GM.UI.mailFrameUIPanelWindowsStashed = false
+			if UpdateUIPanelPositions then
+				UpdateUIPanelPositions()
+			end
+		end
+		return
+	end
+
+	if GM.UI and GM.UI.mailFrameUIPanelWindowsStashed then
+		return
+	end
+
+	local current = UIPanelWindows["MailFrame"]
+	if not current then
+		return
+	end
+
+	local snapshot = {}
+	for key, value in pairs(current) do
+		snapshot[key] = value
+	end
+
+	if GM.UI then
+		GM.UI.mailFrameUIPanelWindowsEntry = snapshot
+		GM.UI.mailFrameUIPanelWindowsStashed = true
+	end
+	UIPanelWindows["MailFrame"] = nil
+
+	if UpdateUIPanelPositions then
+		UpdateUIPanelPositions()
+	end
+end
+
 ApplyMailSwapVisibility = function()
 	if not MailFrame then
 		if GM.UI and GM.UI.frame then
@@ -701,6 +779,8 @@ ApplyMailSwapVisibility = function()
 
 	local returnButton = EnsureReturnToAddonButton()
 	if GM.UI and GM.UI.showingDefaultUI then
+		SetDefaultMailPanelWindowRegistered(true)
+		SetDefaultMailPanelManaged(true)
 		if GM.UI.frame then
 			if GM.UI.frame:IsShown() then
 				GM.UI.frame:Hide()
@@ -717,6 +797,8 @@ ApplyMailSwapVisibility = function()
 			returnButton:Show()
 		end
 	else
+		SetDefaultMailPanelWindowRegistered(false)
+		SetDefaultMailPanelManaged(false)
 		CloseDefaultMailDetailPanels()
 		SetDefaultInboxInteractionEnabled(false)
 		MailFrame:SetAlpha(0)
@@ -854,6 +936,156 @@ local function TrimText(value)
 	return text
 end
 
+local function ParseCopperInput(value)
+	local text = TrimText(value)
+	if text == "" then
+		return 0
+	end
+	local amount = tonumber(text)
+	if not amount or amount <= 0 then
+		return 0
+	end
+	return math.floor(amount)
+end
+
+local function UpdateSendCODInputState()
+	if not GM.UI then
+		return
+	end
+
+	local attachmentSlot = GM.UI.sendAttachmentSlot
+	local codToggle = GM.UI.sendCODToggle
+	local codInput = GM.UI.sendCODInput
+	local hasAttachment = attachmentSlot and attachmentSlot.hasItem and true or false
+
+	if codToggle then
+		if codToggle.Enable then
+			if hasAttachment then
+				codToggle:Enable()
+			else
+				codToggle:Disable()
+			end
+		end
+		if not hasAttachment then
+			codToggle:SetChecked(false)
+		end
+	end
+
+	local codEnabled = hasAttachment and codToggle and codToggle:GetChecked()
+	if codInput then
+		if codInput.Enable and codInput.Disable then
+			if codEnabled then
+				codInput:Enable()
+			else
+				codInput:Disable()
+			end
+		end
+		if codInput.EnableMouse then
+			codInput:EnableMouse(codEnabled and true or false)
+		end
+		if not codEnabled then
+			codInput:SetText("")
+		end
+	end
+end
+
+local function SetSendPendingState(pending)
+	if not GM.UI then
+		return
+	end
+	local isPending = pending and true or false
+	GM.UI.sendPending = isPending
+	if GM.UI.sendSendButton then
+		GM.UI.sendSendButton:SetEnabled(not isPending)
+		GM.UI.sendSendButton:SetText(isPending and "Sending..." or "Send")
+	end
+	if GM.UI.sendClearButton then
+		GM.UI.sendClearButton:SetEnabled(not isPending)
+	end
+end
+
+local function ResetSendFormState(clearAttachmentSlot)
+	if not GM.UI then
+		return
+	end
+	if clearAttachmentSlot and ClickSendMailItemButton and GetSendMailItem then
+		local attachedName = GetSendMailItem(1)
+		if attachedName then
+			ClickSendMailItemButton(1, true)
+		end
+	end
+	if GM.UI.sendRecipientInput then
+		GM.UI.sendRecipientInput:SetText("")
+	end
+	if GM.UI.sendSubjectInput then
+		GM.UI.sendSubjectInput:SetText("")
+	end
+	if GM.UI.sendGoldInput then
+		GM.UI.sendGoldInput:SetText("")
+	end
+	if GM.UI.sendCODToggle then
+		GM.UI.sendCODToggle:SetChecked(false)
+	end
+	if GM.UI.sendCODInput then
+		GM.UI.sendCODInput:SetText("")
+	end
+	if GM.UI.sendBodyInput then
+		GM.UI.sendBodyInput:SetText("")
+	end
+	if UpdateSendAttachmentPreview then
+		UpdateSendAttachmentPreview()
+	end
+	UpdateSendCODInputState()
+end
+
+UpdateSendAttachmentPreview = function()
+	if not GM.UI or not GM.UI.sendAttachmentSlot then
+		return
+	end
+
+	local slot = GM.UI.sendAttachmentSlot
+	local icon = GM.UI.sendAttachmentIcon
+	local countText = GM.UI.sendAttachmentCountText
+	local nameText = GM.UI.sendAttachmentNameText
+
+	local itemName, _, itemTexture, itemCount = nil, nil, nil, nil
+	if GetSendMailItem then
+		itemName, _, itemTexture, itemCount = GetSendMailItem(1)
+	end
+
+	if itemName then
+		slot.hasItem = true
+		if icon then
+			icon:SetTexture(itemTexture or "Interface\\PaperDoll\\UI-Backpack-EmptySlot")
+			icon:SetVertexColor(1, 1, 1, 1)
+		end
+		if countText then
+			if (itemCount or 1) > 1 then
+				countText:SetText(tostring(itemCount))
+			else
+				countText:SetText("")
+			end
+		end
+		if nameText then
+			nameText:SetText(tostring(itemName))
+		end
+	else
+		slot.hasItem = false
+		if icon then
+			icon:SetTexture("Interface\\PaperDoll\\UI-Backpack-EmptySlot")
+			icon:SetVertexColor(0.62, 0.62, 0.62, 0.75)
+		end
+		if countText then
+			countText:SetText("")
+		end
+		if nameText then
+			nameText:SetText("No attachment")
+		end
+	end
+
+	UpdateSendCODInputState()
+end
+
 local function FormatMoney(copper)
 	if not copper or copper <= 0 then
 		return "-"
@@ -924,6 +1156,9 @@ ApplyViewMode = function()
 	end
 	if not isInbox then
 		SetDetailPanelOpen(false)
+		if UpdateSendAttachmentPreview then
+			UpdateSendAttachmentPreview()
+		end
 	end
 
 	if GM.UI.modeInboxButton then
@@ -986,6 +1221,9 @@ SetDetailPanelOpen = function(openValue)
 		return
 	end
 	GM.UI.detailPanelOpen = openValue and true or false
+	if not GM.UI.detailPanelOpen and GM.UI.detailPanel and GM.UI.detailPanel:IsShown() then
+		GM.UI.detailPanel:Hide()
+	end
 	PositionDetailPanel()
 	UpdateCollectAllButtonPosition()
 end
@@ -1002,30 +1240,38 @@ local function BuildDetailBodyText(mailIndex)
 	if GetInboxInvoiceInfo then
 		local invoiceType, itemName, buyerName, bid, buyout, deposit, consignment = GetInboxInvoiceInfo(mailIndex)
 		if invoiceType then
+			local function BuildInvoiceItemLabel(rawName)
+				local value = tostring(rawName or "")
+				if value == "" then
+					return "Attached Item"
+				end
+				local bracketName = value:match("|h%[(.-)%]|h")
+				if bracketName and bracketName ~= "" then
+					return bracketName
+				end
+				value = value:gsub("|c%x%x%x%x%x%x%x%x", "")
+				value = value:gsub("|r", "")
+				value = value:gsub("|H.-|h", "")
+				value = value:gsub("|h", "")
+				value = value:gsub("^%s+", "")
+				value = value:gsub("%s+$", "")
+				if value == "" or value:find("^%d+$") or value:find("^item:[%d:]+$") then
+					return "Attached Item"
+				end
+				return value
+			end
 			local invoiceLines = {
 				"Invoice: " .. tostring(invoiceType),
 			}
 			if itemName and itemName ~= "" then
-				invoiceLines[#invoiceLines + 1] = "Item: " .. tostring(itemName)
+				invoiceLines[#invoiceLines + 1] = "Item: " .. BuildInvoiceItemLabel(itemName)
 			end
-			if buyerName and buyerName ~= "" then
-				invoiceLines[#invoiceLines + 1] = "Buyer: " .. tostring(buyerName)
+				if buyerName and buyerName ~= "" then
+					invoiceLines[#invoiceLines + 1] = "Buyer: " .. tostring(buyerName)
+				end
+				sections[#sections + 1] = table.concat(invoiceLines, "\n")
 			end
-			if bid and bid > 0 then
-				invoiceLines[#invoiceLines + 1] = "Bid: " .. FormatMoney(bid)
-			end
-			if buyout and buyout > 0 then
-				invoiceLines[#invoiceLines + 1] = "Buyout: " .. FormatMoney(buyout)
-			end
-			if deposit and deposit > 0 then
-				invoiceLines[#invoiceLines + 1] = "Deposit: " .. FormatMoney(deposit)
-			end
-			if consignment and consignment > 0 then
-				invoiceLines[#invoiceLines + 1] = "AH Cut: " .. FormatMoney(consignment)
-			end
-			sections[#sections + 1] = table.concat(invoiceLines, "\n")
 		end
-	end
 
 	if #sections == 0 then
 		return "No mail body content."
@@ -1074,10 +1320,11 @@ local function GetDetailItemDisplayName(itemName, itemLink)
 		return nameText
 	end
 
+	local resolvedLinkName = nil
 	if itemLink and GetItemInfo then
-		local linkName = GetItemInfo(itemLink)
-		if IsUsableDisplayName(linkName) then
-			return tostring(linkName)
+		resolvedLinkName = GetItemInfo(itemLink)
+		if IsUsableDisplayName(resolvedLinkName) then
+			return tostring(resolvedLinkName)
 		end
 	end
 
@@ -1086,11 +1333,8 @@ local function GetDetailItemDisplayName(itemName, itemLink)
 		if IsUsableDisplayName(linkLabel) then
 			return linkLabel
 		end
-		if GetItemInfo then
-			local infoName = GetItemInfo(itemLink)
-			if IsUsableDisplayName(infoName) then
-				return tostring(infoName)
-			end
+		if IsUsableDisplayName(resolvedLinkName) then
+			return tostring(resolvedLinkName)
 		end
 	end
 	return "Attached Item"
@@ -1103,7 +1347,7 @@ local function UpdateDetailPanel(rows)
 	local panel = GM.UI.detailPanel
 	local selected = GM.UI.selectedMailIndex
 	if not GM.UI.detailPanelOpen or not selected then
-		local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+		local tooltipArea = GM.UI.detailItemTooltipArea
 		if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
 			GameTooltip:Hide()
 		end
@@ -1113,7 +1357,7 @@ local function UpdateDetailPanel(rows)
 
 	local row = FindRowByMailIndex(rows or {}, selected)
 	if not row then
-		local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+		local tooltipArea = GM.UI.detailItemTooltipArea
 		if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
 			GameTooltip:Hide()
 		end
@@ -1129,20 +1373,11 @@ local function UpdateDetailPanel(rows)
 		GM.UI.detailSubjectText:SetText("Subject: " .. tostring(row.subject or "-"))
 	end
 	if GM.UI.detailMetaText then
-		local meta = "Money: " .. FormatMoney(row.money) ..
-			"   COD: " .. FormatMoney(row.codAmount)
+		local meta = "Money " .. FormatMoney(row.money) .. "   COD " .. FormatMoney(row.codAmount)
 		if GetInboxInvoiceInfo then
-			local invoiceType, _, _, bid, buyout = GetInboxInvoiceInfo(row.index)
-			if invoiceType then
-				local purchasePrice = 0
-				if buyout and buyout > 0 then
-					purchasePrice = buyout
-				elseif bid and bid > 0 then
-					purchasePrice = bid
-				end
-				if purchasePrice > 0 then
-					meta = meta .. "   Purchase: " .. FormatMoney(purchasePrice)
-				end
+			local invoiceType = GetInboxInvoiceInfo(row.index)
+			if invoiceType and not row.hasItem then
+				meta = "Amount received: " .. FormatMoney(row.money)
 			end
 		end
 		GM.UI.detailMetaText:SetText(meta)
@@ -1158,8 +1393,12 @@ local function UpdateDetailPanel(rows)
 			GM.UI.detailItemLink = itemLink
 			if itemTexture then
 				GM.UI.detailItemIcon:SetTexture(itemTexture)
+				GM.UI.detailItemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+				GM.UI.detailItemIcon:SetVertexColor(1, 1, 1, 1)
 			else
 				GM.UI.detailItemIcon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+				GM.UI.detailItemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+				GM.UI.detailItemIcon:SetVertexColor(1, 1, 1, 1)
 			end
 			if GM.UI.detailItemCountText then
 				if itemCount and itemCount > 1 then
@@ -1185,10 +1424,12 @@ local function UpdateDetailPanel(rows)
 		else
 			GM.UI.detailItemText:SetText("No item attachment")
 			GM.UI.detailItemIcon:SetTexture("Interface\\Buttons\\UI-EmptySlot-Disabled")
+			GM.UI.detailItemIcon:SetTexCoord(0, 1, 0, 1)
+			GM.UI.detailItemIcon:SetVertexColor(0.72, 0.72, 0.72, 0.9)
 			GM.UI.detailItemText:SetTextColor(unpack(THEME_TEXT.detailItem))
 			GM.UI.detailItemMailIndex = nil
 			GM.UI.detailItemLink = nil
-			local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+			local tooltipArea = GM.UI.detailItemTooltipArea
 			if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
 				GameTooltip:Hide()
 			end
@@ -1198,10 +1439,6 @@ local function UpdateDetailPanel(rows)
 			if GM.UI.detailItemIconBorder then
 				GM.UI.detailItemIconBorder:SetBackdropBorderColor(unpack(THEME.detailItemBorder))
 			end
-		end
-		if GM.UI.detailItemHitArea then
-			local enableTooltip = GM.UI.detailItemMailIndex ~= nil
-			GM.UI.detailItemHitArea:EnableMouse(enableTooltip)
 		end
 		if GM.UI.detailItemTooltipArea then
 			local enableTooltip = GM.UI.detailItemMailIndex ~= nil
@@ -1651,6 +1888,8 @@ function GM.UI.Initialize()
 			return
 		end
 		if MailFrame then
+			SetDefaultMailPanelWindowRegistered(true)
+			SetDefaultMailPanelManaged(true)
 			SetDefaultInboxInteractionEnabled(true)
 			MailFrame:SetAlpha(1)
 			MailFrame:EnableMouse(true)
@@ -2020,14 +2259,161 @@ function GM.UI.Initialize()
 	end)
 	GM.UI.sendSubjectInput = sendSubjectInput
 
+	local sendGoldLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	sendGoldLabel:SetPoint("TOPLEFT", sendSubjectInput, "BOTTOMLEFT", 0, -12)
+	sendGoldLabel:SetText("Gold (copper)")
+	GM.UI.sendGoldLabel = sendGoldLabel
+
+	local sendGoldInput = CreateFrame("EditBox", nil, sendPanel, "InputBoxTemplate")
+	sendGoldInput:SetAutoFocus(false)
+	sendGoldInput:SetHeight(20)
+	sendGoldInput:SetNumeric(false)
+	sendGoldInput:SetPoint("TOPLEFT", sendGoldLabel, "BOTTOMLEFT", 0, -4)
+	sendGoldInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -88)
+	sendGoldInput:SetScript("OnEscapePressed", function(self)
+		self:ClearFocus()
+	end)
+	sendGoldInput:SetScript("OnEnterPressed", function(self)
+		self:ClearFocus()
+	end)
+	GM.UI.sendGoldInput = sendGoldInput
+
+	local sendAttachmentLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	sendAttachmentLabel:SetPoint("TOPLEFT", sendGoldInput, "BOTTOMLEFT", 0, -12)
+	sendAttachmentLabel:SetText("Attachment")
+	GM.UI.sendAttachmentLabel = sendAttachmentLabel
+
+	local sendAttachmentSlot = CreateFrame("Button", nil, sendPanel, "BackdropTemplate")
+	sendAttachmentSlot:SetSize(32, 32)
+	sendAttachmentSlot:SetPoint("TOPLEFT", sendAttachmentLabel, "BOTTOMLEFT", 0, -4)
+	sendAttachmentSlot:SetBackdrop({
+		bgFile = "Interface\\Buttons\\WHITE8x8",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 8,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+	sendAttachmentSlot:SetBackdropColor(unpack(THEME.detailBodyBg))
+	sendAttachmentSlot:SetBackdropBorderColor(unpack(THEME.detailBodyBorder))
+	sendAttachmentSlot:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	sendAttachmentSlot:SetScript("OnMouseUp", function(_, button)
+		if not ClickSendMailItemButton then
+			return
+		end
+		if button == "RightButton" then
+			ClickSendMailItemButton(1, true)
+		else
+			ClickSendMailItemButton(1)
+		end
+		C_Timer.After(0, function()
+			if UpdateSendAttachmentPreview then
+				UpdateSendAttachmentPreview()
+			end
+		end)
+	end)
+	sendAttachmentSlot:SetScript("OnReceiveDrag", function()
+		if not ClickSendMailItemButton then
+			return
+		end
+		ClickSendMailItemButton(1)
+		C_Timer.After(0, function()
+			if UpdateSendAttachmentPreview then
+				UpdateSendAttachmentPreview()
+			end
+		end)
+	end)
+	GM.UI.sendAttachmentSlot = sendAttachmentSlot
+
+	local sendAttachmentIcon = sendAttachmentSlot:CreateTexture(nil, "ARTWORK")
+	sendAttachmentIcon:SetPoint("TOPLEFT", sendAttachmentSlot, "TOPLEFT", 3, -3)
+	sendAttachmentIcon:SetPoint("BOTTOMRIGHT", sendAttachmentSlot, "BOTTOMRIGHT", -3, 3)
+	sendAttachmentIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	sendAttachmentIcon:SetTexture("Interface\\PaperDoll\\UI-Backpack-EmptySlot")
+	sendAttachmentIcon:SetVertexColor(0.62, 0.62, 0.62, 0.75)
+	GM.UI.sendAttachmentIcon = sendAttachmentIcon
+
+	local sendAttachmentCountText = sendAttachmentSlot:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+	sendAttachmentCountText:SetPoint("BOTTOMRIGHT", sendAttachmentSlot, "BOTTOMRIGHT", -3, 2)
+	sendAttachmentCountText:SetText("")
+	GM.UI.sendAttachmentCountText = sendAttachmentCountText
+
+	local sendAttachmentNameText = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	sendAttachmentNameText:SetPoint("LEFT", sendAttachmentSlot, "RIGHT", 8, 0)
+	sendAttachmentNameText:SetPoint("RIGHT", sendPanel, "RIGHT", -12, 0)
+	sendAttachmentNameText:SetJustifyH("LEFT")
+	sendAttachmentNameText:SetWordWrap(false)
+	sendAttachmentNameText:SetText("No attachment")
+	GM.UI.sendAttachmentNameText = sendAttachmentNameText
+
+	local sendCODToggle = CreateFrame("CheckButton", nil, sendPanel, "UICheckButtonTemplate")
+	sendCODToggle:SetPoint("TOPLEFT", sendAttachmentSlot, "TOPRIGHT", 8, -20)
+	sendCODToggle:SetScript("OnClick", function()
+		UpdateSendCODInputState()
+	end)
+	GM.UI.sendCODToggle = sendCODToggle
+
+	local sendCODLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	sendCODLabel:SetPoint("LEFT", sendCODToggle, "RIGHT", 0, 0)
+	sendCODLabel:SetText("COD")
+	GM.UI.sendCODLabel = sendCODLabel
+
+	local sendCODAmountLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	sendCODAmountLabel:SetPoint("LEFT", sendCODLabel, "RIGHT", 10, 0)
+	sendCODAmountLabel:SetText("Amount")
+	GM.UI.sendCODAmountLabel = sendCODAmountLabel
+
+	local sendCODInput = CreateFrame("EditBox", nil, sendPanel, "InputBoxTemplate")
+	sendCODInput:SetAutoFocus(false)
+	sendCODInput:SetHeight(20)
+	sendCODInput:SetNumeric(false)
+	sendCODInput:SetWidth(110)
+	sendCODInput:SetPoint("LEFT", sendCODAmountLabel, "RIGHT", 6, 0)
+	sendCODInput:SetScript("OnEscapePressed", function(self)
+		self:ClearFocus()
+	end)
+	sendCODInput:SetScript("OnEnterPressed", function(self)
+		self:ClearFocus()
+	end)
+	GM.UI.sendCODInput = sendCODInput
+
+	local sendAttachmentEventFrame = CreateFrame("Frame", nil, sendPanel)
+	sendAttachmentEventFrame:RegisterEvent("MAIL_SEND_INFO_UPDATE")
+	sendAttachmentEventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
+	sendAttachmentEventFrame:RegisterEvent("MAIL_FAILED")
+	sendAttachmentEventFrame:RegisterEvent("MAIL_CLOSED")
+	sendAttachmentEventFrame:SetScript("OnEvent", function(_, event)
+		if event == "MAIL_CLOSED" then
+			SetSendPendingState(false)
+			return
+		end
+		if event == "MAIL_SEND_SUCCESS" then
+			if GM.UI and GM.UI.sendPending then
+				SetSendPendingState(false)
+				ResetSendFormState(false)
+				SetStatusText("Mail sent")
+			end
+			return
+		end
+		if event == "MAIL_FAILED" then
+			if GM.UI and GM.UI.sendPending then
+				SetSendPendingState(false)
+				SetStatusText("Send failed")
+			end
+			return
+		end
+		if UpdateSendAttachmentPreview then
+			UpdateSendAttachmentPreview()
+		end
+	end)
+	GM.UI.sendAttachmentEventFrame = sendAttachmentEventFrame
+
 	local sendBodyLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendBodyLabel:SetPoint("TOPLEFT", sendSubjectInput, "BOTTOMLEFT", 0, -12)
+	sendBodyLabel:SetPoint("TOPLEFT", sendAttachmentSlot, "BOTTOMLEFT", 0, -12)
 	sendBodyLabel:SetText("Message")
 	GM.UI.sendBodyLabel = sendBodyLabel
 
 	local sendBodyFrame = CreateFrame("Frame", nil, sendPanel, "BackdropTemplate")
 	sendBodyFrame:SetPoint("TOPLEFT", sendBodyLabel, "BOTTOMLEFT", 0, -4)
-	sendBodyFrame:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -10, -92)
+	sendBodyFrame:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -10, -176)
 	sendBodyFrame:SetPoint("BOTTOMLEFT", sendPanel, "BOTTOMLEFT", 10, 40)
 	sendBodyFrame:SetPoint("BOTTOMRIGHT", sendPanel, "BOTTOMRIGHT", -10, 40)
 	sendBodyFrame:SetBackdrop({
@@ -2056,6 +2442,9 @@ function GM.UI.Initialize()
 	sendSendButton:SetPoint("BOTTOMRIGHT", sendPanel, "BOTTOMRIGHT", -10, 9)
 	sendSendButton:SetText("Send")
 	sendSendButton:SetScript("OnClick", function()
+		if GM.UI and GM.UI.sendPending then
+			return
+		end
 		local recipient = TrimText(GM.UI.sendRecipientInput and GM.UI.sendRecipientInput:GetText() or "")
 		if recipient == "" then
 			SetStatusText("Recipient required")
@@ -2063,9 +2452,24 @@ function GM.UI.Initialize()
 		end
 		local subject = GM.UI.sendSubjectInput and GM.UI.sendSubjectInput:GetText() or ""
 		local body = GM.UI.sendBodyInput and GM.UI.sendBodyInput:GetText() or ""
+		local goldCopper = ParseCopperInput(GM.UI.sendGoldInput and GM.UI.sendGoldInput:GetText() or "")
+		local codCopper = ParseCopperInput(GM.UI.sendCODInput and GM.UI.sendCODInput:GetText() or "")
+		local hasAttachment = GM.UI.sendAttachmentSlot and GM.UI.sendAttachmentSlot.hasItem
+		local codEnabled = hasAttachment and GM.UI.sendCODToggle and GM.UI.sendCODToggle:GetChecked()
 		if SendMail then
+			SetSendPendingState(true)
+			SetStatusText("Sending...")
+			if goldCopper > 0 and SetSendMailMoney then
+				SetSendMailMoney(goldCopper)
+			end
+			if SetSendMailCOD then
+				if codEnabled and codCopper > 0 then
+					SetSendMailCOD(codCopper)
+				else
+					SetSendMailCOD(0)
+				end
+			end
 			SendMail(recipient, subject, body)
-			SetStatusText("Mail sent")
 		else
 			SetStatusText("Send unavailable")
 		end
@@ -2078,18 +2482,12 @@ function GM.UI.Initialize()
 	sendClearButton:SetPoint("RIGHT", sendSendButton, "LEFT", -8, 0)
 	sendClearButton:SetText("Clear")
 	sendClearButton:SetScript("OnClick", function()
-		if GM.UI.sendRecipientInput then
-			GM.UI.sendRecipientInput:SetText("")
-		end
-		if GM.UI.sendSubjectInput then
-			GM.UI.sendSubjectInput:SetText("")
-		end
-		if GM.UI.sendBodyInput then
-			GM.UI.sendBodyInput:SetText("")
-		end
+		ResetSendFormState(true)
 	end)
 	StyleButton(sendClearButton, "normal")
 	GM.UI.sendClearButton = sendClearButton
+	SetSendPendingState(false)
+	UpdateSendAttachmentPreview()
 
 	local detailPanel = CreateFrame("Frame", "GorilMailDetailPanel", UIParent, "BackdropTemplate")
 	detailPanel:SetWidth(DETAIL_PANEL_WIDTH)
@@ -2112,6 +2510,13 @@ function GM.UI.Initialize()
 	detailHeader:SetPoint("TOPLEFT", detailPanel, "TOPLEFT", 6, -6)
 	detailHeader:SetPoint("TOPRIGHT", detailPanel, "TOPRIGHT", -6, -6)
 	detailHeader:SetHeight(50)
+
+	local detailCloseButton = CreateFrame("Button", nil, detailPanel, "UIPanelCloseButton")
+	detailCloseButton:SetPoint("TOPRIGHT", detailPanel, "TOPRIGHT", 2, 2)
+	detailCloseButton:SetScript("OnClick", function()
+		SetDetailPanelOpen(false)
+	end)
+	GM.UI.detailCloseButton = detailCloseButton
 
 	local detailHeaderBg = detailHeader:CreateTexture(nil, "BACKGROUND")
 	detailHeaderBg:SetAllPoints()
@@ -2192,12 +2597,12 @@ function GM.UI.Initialize()
 	end)
 	detailItemTooltipArea:SetScript("OnLeave", function()
 		HideDetailCompareTooltips()
-		if GameTooltip and GameTooltip:IsOwned(detailItemTooltipArea) then
+		if GameTooltip and GM.UI and GM.UI.detailItemIcon and GameTooltip:IsOwned(GM.UI.detailItemIcon) then
 			GameTooltip:Hide()
 		end
 	end)
 	detailItemTooltipArea:SetScript("OnUpdate", function(self)
-		if not GameTooltip or not GameTooltip:IsOwned(self) then
+		if not GameTooltip or not GM.UI or not GM.UI.detailItemIcon or not GameTooltip:IsOwned(GM.UI.detailItemIcon) then
 			return
 		end
 		if not self:IsMouseOver() then
@@ -2207,7 +2612,7 @@ function GM.UI.Initialize()
 	end)
 	detailItemTooltipArea:SetScript("OnHide", function()
 		HideDetailCompareTooltips()
-		if GameTooltip and GameTooltip:IsOwned(detailItemTooltipArea) then
+		if GameTooltip and GM.UI and GM.UI.detailItemIcon and GameTooltip:IsOwned(GM.UI.detailItemIcon) then
 			GameTooltip:Hide()
 		end
 	end)
@@ -2220,6 +2625,11 @@ function GM.UI.Initialize()
 	detailItemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 	detailItemIcon:SetTexture("Interface\\Buttons\\UI-EmptySlot-Disabled")
 	GM.UI.detailItemIcon = detailItemIcon
+
+	detailItemTooltipArea:ClearAllPoints()
+	detailItemTooltipArea:SetPoint("TOPLEFT", detailItemIcon, "TOPLEFT", 0, 0)
+	detailItemTooltipArea:SetPoint("BOTTOMRIGHT", detailItemIcon, "BOTTOMRIGHT", 0, 0)
+	detailItemTooltipArea:SetHitRectInsets(0, 0, 0, 0)
 
 	local detailItemIconBorder = CreateFrame("Frame", nil, detailItemHitArea, "BackdropTemplate")
 	detailItemIconBorder:SetPoint("TOPLEFT", detailItemIcon, "TOPLEFT", -2, 2)
@@ -2386,6 +2796,7 @@ function GM.UI.OnMailShow()
 		GM.UI.closingByX = false
 		GM.UI.viewMode = "inbox"
 	end
+	SetSendPendingState(false)
 	HideRefreshNotice()
 	SetDetailPanelOpen(false)
 	ApplyViewMode()
@@ -2399,10 +2810,13 @@ function GM.UI.OnMailClosed()
 		GM.UI.closingByX = false
 	end
 	StopRefreshCooldown()
+	SetSendPendingState(false)
 	HideRefreshNotice()
 	SetDetailPanelOpen(false)
 	CloseDefaultMailDetailPanels()
 	if MailFrame then
+		SetDefaultMailPanelWindowRegistered(true)
+		SetDefaultMailPanelManaged(true)
 		SetDefaultInboxInteractionEnabled(true)
 		MailFrame:SetAlpha(1)
 		MailFrame:EnableMouse(true)
