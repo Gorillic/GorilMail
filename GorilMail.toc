@@ -1,0 +1,12 @@
+## Interface: 120001
+## Title: GorilMail
+## Notes: Lightweight mailbox reader and safe collector
+## Author: Goril
+## Version: 0.1.0
+## SavedVariables: GorilMailUIPos
+
+core.lua
+mailbox.lua
+collector.lua
+ui.lua
+utils.lua

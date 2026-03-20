@@ -1,0 +1,16 @@
+# Local / OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Lua bytecode
+*.luac
+
+# Docs (keep only public essentials)
+*.md
+!README.md
+!LICENSE
+!LICENSE.md
