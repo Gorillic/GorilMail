@@ -29,6 +29,8 @@ local ApplyResizeLayout
 local ApplyViewMode
 local SetViewMode
 local SetDetailPanelOpen
+local ApplyMailSwapVisibility
+local SetStatusText
 
 local THEMES = {
 	Horde = {
@@ -497,7 +499,7 @@ ApplyThemeToUI = function()
 		GM.UI.detailMetaText:SetTextColor(unpack(THEME_TEXT.detailMeta))
 	end
 	if GM.UI.detailItemIconBorder then
-		GM.UI.detailItemIconBorder:SetColorTexture(unpack(THEME.detailItemBorder))
+		GM.UI.detailItemIconBorder:SetBackdropBorderColor(unpack(THEME.detailItemBorder))
 	end
 	if GM.UI.detailItemText then
 		GM.UI.detailItemText:SetTextColor(unpack(THEME_TEXT.detailItem))
@@ -607,19 +609,25 @@ local function EnsureReturnToAddonButton()
 	local button = CreateFrame("Button", "GorilMailReturnButton", MailFrame, "UIPanelButtonTemplate")
 	button:SetSize(84, 20)
 	button:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -36, -26)
+	button:SetFrameStrata("DIALOG")
+	button:SetFrameLevel((MailFrame:GetFrameLevel() or 0) + 30)
+	button:RegisterForClicks("AnyUp")
+	button:SetHitRectInsets(-2, -2, -2, -2)
 	button:SetText("GorilMail")
 	button:SetScript("OnClick", function()
 		GM.UI.showingDefaultUI = false
-		if GM.UI and GM.UI.frame then
+		if ApplyMailSwapVisibility then
+			ApplyMailSwapVisibility()
+		end
+		if GM.Mailbox and GM.Mailbox.ScanInbox then
+			GM.Mailbox.ScanInbox()
+		end
+		SetStatusText("Returned to GorilMail")
+		if GM.UI and GM.UI.frame and not GM.UI.frame:IsShown() then
 			GM.UI.frame:Show()
+		end
+		if RenderInboxRows then
 			RenderInboxRows()
-		end
-		if MailFrame then
-			MailFrame:SetAlpha(0)
-			MailFrame:EnableMouse(false)
-		end
-		if GM.UI and GM.UI.returnButton then
-			GM.UI.returnButton:Hide()
 		end
 	end)
 	StyleButton(button, "accent")
@@ -635,7 +643,53 @@ local function CloseDefaultMailDetailPanels()
 	end
 end
 
-local function ApplyMailSwapVisibility()
+local function SetDefaultInboxInteractionEnabled(enabled)
+	local canInteract = enabled and true or false
+
+	local function SetFrameMouseState(target)
+		if not target then
+			return
+		end
+		if target.EnableMouse then
+			target:EnableMouse(canInteract)
+		end
+		if target.SetMouseClickEnabled then
+			target:SetMouseClickEnabled(canInteract)
+		end
+		if target.SetMouseMotionEnabled then
+			target:SetMouseMotionEnabled(canInteract)
+		end
+	end
+
+	local function SetFrameTreeMouseState(root, depth, visited)
+		if not root or depth < 0 then
+			return
+		end
+		visited = visited or {}
+		if visited[root] then
+			return
+		end
+		visited[root] = true
+		SetFrameMouseState(root)
+		if depth == 0 or not root.GetChildren then
+			return
+		end
+		local children = { root:GetChildren() }
+		for i = 1, #children do
+			SetFrameTreeMouseState(children[i], depth - 1, visited)
+		end
+	end
+
+	local inboxFrame = _G and _G.InboxFrame
+	SetFrameTreeMouseState(inboxFrame, 3)
+
+	for i = 1, 7 do
+		local inboxRowButton = _G and _G["MailItem" .. i]
+		SetFrameTreeMouseState(inboxRowButton, 3)
+	end
+end
+
+ApplyMailSwapVisibility = function()
 	if not MailFrame then
 		if GM.UI and GM.UI.frame then
 			if not GM.UI.frame:IsShown() then
@@ -652,13 +706,19 @@ local function ApplyMailSwapVisibility()
 				GM.UI.frame:Hide()
 			end
 		end
+		SetDefaultInboxInteractionEnabled(true)
 		MailFrame:SetAlpha(1)
 		MailFrame:EnableMouse(true)
 		if returnButton then
+			if returnButton.SetEnabled then
+				returnButton:SetEnabled(true)
+			end
+			returnButton:EnableMouse(true)
 			returnButton:Show()
 		end
 	else
 		CloseDefaultMailDetailPanels()
+		SetDefaultInboxInteractionEnabled(false)
 		MailFrame:SetAlpha(0)
 		MailFrame:EnableMouse(false)
 		if GM.UI.frame then
@@ -681,7 +741,7 @@ local function FindRowByMailIndex(rows, mailIndex)
 	return nil
 end
 
-local function SetStatusText(text)
+SetStatusText = function(text)
 	if GM.UI and GM.UI.statusText then
 		GM.UI.statusText:SetText("Status: " .. text)
 	end
@@ -973,6 +1033,69 @@ local function BuildDetailBodyText(mailIndex)
 	return table.concat(sections, "\n\n")
 end
 
+local function GetDetailItemDisplayName(itemName, itemLink)
+	local function StripLinkCodes(text)
+		local value = tostring(text or "")
+		if value == "" then
+			return ""
+		end
+		local bracket = value:match("|h%[(.-)%]|h")
+		if bracket and bracket ~= "" then
+			return bracket
+		end
+		value = value:gsub("|c%x%x%x%x%x%x%x%x", "")
+		value = value:gsub("|r", "")
+		value = value:gsub("|H.-|h", "")
+		value = value:gsub("|h", "")
+		value = value:gsub("^%s+", "")
+		value = value:gsub("%s+$", "")
+		return value
+	end
+
+	local function IsUsableDisplayName(text)
+		local value = tostring(text or "")
+		if value == "" then
+			return false
+		end
+		if value:find("^%d+$") then
+			return false
+		end
+		if value:find("^item:%d") then
+			return false
+		end
+		if value:find("^item:[%d:]+$") then
+			return false
+		end
+		return true
+	end
+
+	local nameText = StripLinkCodes(itemName)
+	if IsUsableDisplayName(nameText) then
+		return nameText
+	end
+
+	if itemLink and GetItemInfo then
+		local linkName = GetItemInfo(itemLink)
+		if IsUsableDisplayName(linkName) then
+			return tostring(linkName)
+		end
+	end
+
+	if itemLink then
+		local linkLabel = StripLinkCodes(itemLink)
+		if IsUsableDisplayName(linkLabel) then
+			return linkLabel
+		end
+		if GetItemInfo then
+			local infoName = GetItemInfo(itemLink)
+			if IsUsableDisplayName(infoName) then
+				return tostring(infoName)
+			end
+		end
+	end
+	return "Attached Item"
+end
+
 local function UpdateDetailPanel(rows)
 	if not GM.UI or not GM.UI.detailPanel then
 		return
@@ -980,7 +1103,8 @@ local function UpdateDetailPanel(rows)
 	local panel = GM.UI.detailPanel
 	local selected = GM.UI.selectedMailIndex
 	if not GM.UI.detailPanelOpen or not selected then
-		if GameTooltip and GM.UI.detailItemHitArea and GameTooltip:IsOwned(GM.UI.detailItemHitArea) then
+		local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+		if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
 			GameTooltip:Hide()
 		end
 		panel:Hide()
@@ -989,7 +1113,8 @@ local function UpdateDetailPanel(rows)
 
 	local row = FindRowByMailIndex(rows or {}, selected)
 	if not row then
-		if GameTooltip and GM.UI.detailItemHitArea and GameTooltip:IsOwned(GM.UI.detailItemHitArea) then
+		local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+		if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
 			GameTooltip:Hide()
 		end
 		panel:Hide()
@@ -1006,15 +1131,29 @@ local function UpdateDetailPanel(rows)
 	if GM.UI.detailMetaText then
 		local meta = "Money: " .. FormatMoney(row.money) ..
 			"   COD: " .. FormatMoney(row.codAmount)
+		if GetInboxInvoiceInfo then
+			local invoiceType, _, _, bid, buyout = GetInboxInvoiceInfo(row.index)
+			if invoiceType then
+				local purchasePrice = 0
+				if buyout and buyout > 0 then
+					purchasePrice = buyout
+				elseif bid and bid > 0 then
+					purchasePrice = bid
+				end
+				if purchasePrice > 0 then
+					meta = meta .. "   Purchase: " .. FormatMoney(purchasePrice)
+				end
+			end
+		end
 		GM.UI.detailMetaText:SetText(meta)
 	end
 
 	if GM.UI.detailItemText and GM.UI.detailItemIcon then
 		if row.hasItem and GetInboxItem then
-			local itemName, itemTexture, itemCount, itemQuality = GetInboxItem(row.index, 1)
+			local itemName, itemID, itemTexture, itemCount, itemQuality = GetInboxItem(row.index, 1)
 			local itemLink = GetInboxItemLink and GetInboxItemLink(row.index, 1) or nil
-			local itemLabel = itemLink or itemName or "Attached Item"
-			GM.UI.detailItemText:SetText(tostring(itemLabel))
+			local itemLabel = GetDetailItemDisplayName(itemName, itemLink)
+			GM.UI.detailItemText:SetText(itemLabel)
 			GM.UI.detailItemMailIndex = row.index
 			GM.UI.detailItemLink = itemLink
 			if itemTexture then
@@ -1032,12 +1171,12 @@ local function UpdateDetailPanel(rows)
 			if GM.UI.detailItemIconBorder then
 				local q = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[itemQuality or -1] or nil
 				if q then
-					GM.UI.detailItemIconBorder:SetColorTexture(q.r, q.g, q.b, 0.95)
+					GM.UI.detailItemIconBorder:SetBackdropBorderColor(q.r, q.g, q.b, 0.95)
 				else
-					GM.UI.detailItemIconBorder:SetColorTexture(unpack(THEME.detailItemBorderFallback))
+					GM.UI.detailItemIconBorder:SetBackdropBorderColor(unpack(THEME.detailItemBorderFallback))
 				end
 			end
-			if GM.UI.detailItemText and not itemLink and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[itemQuality or -1] then
+			if GM.UI.detailItemText and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[itemQuality or -1] then
 				local q = ITEM_QUALITY_COLORS[itemQuality or -1]
 				GM.UI.detailItemText:SetTextColor(q.r, q.g, q.b)
 			elseif GM.UI.detailItemText then
@@ -1045,19 +1184,29 @@ local function UpdateDetailPanel(rows)
 			end
 		else
 			GM.UI.detailItemText:SetText("No item attachment")
-			GM.UI.detailItemIcon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+			GM.UI.detailItemIcon:SetTexture("Interface\\Buttons\\UI-EmptySlot-Disabled")
 			GM.UI.detailItemText:SetTextColor(unpack(THEME_TEXT.detailItem))
 			GM.UI.detailItemMailIndex = nil
 			GM.UI.detailItemLink = nil
+			local tooltipArea = GM.UI.detailItemTooltipArea or GM.UI.detailItemHitArea
+			if GameTooltip and tooltipArea and GameTooltip:IsOwned(tooltipArea) then
+				GameTooltip:Hide()
+			end
 			if GM.UI.detailItemCountText then
 				GM.UI.detailItemCountText:SetText("")
 			end
 			if GM.UI.detailItemIconBorder then
-				GM.UI.detailItemIconBorder:SetColorTexture(unpack(THEME.detailItemBorder))
+				GM.UI.detailItemIconBorder:SetBackdropBorderColor(unpack(THEME.detailItemBorder))
 			end
 		end
 		if GM.UI.detailItemHitArea then
-			GM.UI.detailItemHitArea:SetEnabled(GM.UI.detailItemMailIndex ~= nil)
+			local enableTooltip = GM.UI.detailItemMailIndex ~= nil
+			GM.UI.detailItemHitArea:EnableMouse(enableTooltip)
+		end
+		if GM.UI.detailItemTooltipArea then
+			local enableTooltip = GM.UI.detailItemMailIndex ~= nil
+			GM.UI.detailItemTooltipArea:SetEnabled(enableTooltip)
+			GM.UI.detailItemTooltipArea:EnableMouse(enableTooltip)
 		end
 	end
 	if GM.UI.detailBodyText and GM.UI.detailBodyChild and GM.UI.detailBodyScroll then
@@ -1116,7 +1265,7 @@ function RenderInboxRows()
 	FauxScrollFrame_Update(GM.UI.scrollFrame, totalRows, visibleRowCount, ROW_HEIGHT)
 	local offset = FauxScrollFrame_GetOffset(GM.UI.scrollFrame)
 	local visibleCount = 0
-	local selectedStillExists = false
+	local selectedExistsInData = (not GM.UI.selectedMailIndex) or (FindRowByMailIndex(dataRows, GM.UI.selectedMailIndex) ~= nil)
 	for i = 1, visibleRowCount do
 		local row = GM.UI.rows[i]
 		local dataIndex = offset + i
@@ -1138,20 +1287,27 @@ function RenderInboxRows()
 			row.collectButton:SetShown(true)
 			row.collectButton:SetEnabled(data.canCollect)
 			row.collectButton:SetText(data.canCollect and "Get" or "NA")
-			if data.wasRead then
-				row.sender:SetTextColor(unpack(THEME_TEXT.rowRead))
-				row.subject:SetTextColor(unpack(THEME_TEXT.rowRead))
-				if row.unreadDot then
-					row.unreadDot:SetColorTexture(unpack(THEME.unreadDotRead))
+				if data.wasRead then
+					row.sender:SetTextColor(unpack(THEME_TEXT.rowRead))
+					row.subject:SetTextColor(unpack(THEME_TEXT.rowRead))
+					if row.unreadDot then
+						row.unreadDot:SetColorTexture(unpack(THEME.unreadDotRead))
 				end
 			else
 				row.sender:SetTextColor(unpack(THEME_TEXT.rowUnreadSender))
 				row.subject:SetTextColor(unpack(THEME_TEXT.rowUnreadSubject))
-				if row.unreadDot then
-					row.unreadDot:SetColorTexture(unpack(THEME.unreadDotUnread))
+					if row.unreadDot then
+						row.unreadDot:SetColorTexture(unpack(THEME.unreadDotUnread))
+					end
 				end
-			end
-			row.item:SetTextColor(unpack(THEME_TEXT.rowItem))
+				if data.hasItem and GetInboxItem and ITEM_QUALITY_COLORS then
+					local _, _, _, _, itemQuality = GetInboxItem(data.index, 1)
+					local qualityColor = ITEM_QUALITY_COLORS[itemQuality or -1]
+					if qualityColor then
+						row.subject:SetTextColor(qualityColor.r, qualityColor.g, qualityColor.b)
+					end
+				end
+				row.item:SetTextColor(unpack(THEME_TEXT.rowItem))
 			if data.canCollect then
 				row.state:SetTextColor(unpack(THEME_STATUS.ok))
 			else
@@ -1159,7 +1315,6 @@ function RenderInboxRows()
 			end
 			if GM.UI.selectedMailIndex and GM.UI.selectedMailIndex == data.index then
 				row.bg:SetColorTexture(unpack(THEME.rowSelectedBg))
-				selectedStillExists = true
 			elseif not data.wasRead and i % 2 == 0 then
 				row.bg:SetColorTexture(unpack(THEME.rowUnreadEvenBg))
 			elseif not data.wasRead then
@@ -1178,7 +1333,7 @@ function RenderInboxRows()
 			row:Hide()
 		end
 	end
-	if GM.UI.selectedMailIndex and not selectedStillExists then
+	if GM.UI.selectedMailIndex and not selectedExistsInData then
 		GM.UI.selectedMailIndex = nil
 		SetDetailPanelOpen(false)
 	end
@@ -1491,6 +1646,15 @@ function GM.UI.Initialize()
 		if GM.UI and GM.UI.showingDefaultUI then
 			return
 		end
+		if GM.UI and GM.UI.closingByX then
+			GM.UI.closingByX = false
+			return
+		end
+		if MailFrame then
+			SetDefaultInboxInteractionEnabled(true)
+			MailFrame:SetAlpha(1)
+			MailFrame:EnableMouse(true)
+		end
 		if GM.UI and GM.UI.returnButton then
 			GM.UI.returnButton:Hide()
 		end
@@ -1593,6 +1757,12 @@ function GM.UI.Initialize()
 	local closeButton = CreateFrame("Button", nil, toolbar, "UIPanelCloseButton")
 	closeButton:SetPoint("RIGHT", toolbar, "RIGHT", 2, 0)
 	closeButton:SetScript("OnClick", function()
+		if GM.UI then
+			GM.UI.closingByX = true
+		end
+		if MailFrame and MailFrame.IsShown and MailFrame:IsShown() then
+			MailFrame:Hide()
+		end
 		frame:Hide()
 	end)
 
@@ -1657,6 +1827,18 @@ function GM.UI.Initialize()
 	end)
 	StyleButton(defaultUIButton, "accent")
 	GM.UI.defaultUIButton = defaultUIButton
+
+	-- Final toolbar ordering: A, H, Inbox, Send, WoW UI, X
+	defaultUIButton:ClearAllPoints()
+	defaultUIButton:SetPoint("RIGHT", closeButton, "LEFT", -10, 0)
+	modeSendButton:ClearAllPoints()
+	modeSendButton:SetPoint("RIGHT", defaultUIButton, "LEFT", -4, 0)
+	modeInboxButton:ClearAllPoints()
+	modeInboxButton:SetPoint("RIGHT", modeSendButton, "LEFT", -2, 0)
+	themeHordeButton:ClearAllPoints()
+	themeHordeButton:SetPoint("RIGHT", modeInboxButton, "LEFT", -4, 0)
+	themeAllianceButton:ClearAllPoints()
+	themeAllianceButton:SetPoint("RIGHT", themeHordeButton, "LEFT", -2, 0)
 
 	local summaryBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
 	summaryBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -34)
@@ -1954,73 +2136,112 @@ function GM.UI.Initialize()
 	GM.UI.detailSubjectText = detailSubjectText
 
 	local detailMetaText = detailPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	detailMetaText:SetPoint("TOPLEFT", detailHeader, "BOTTOMLEFT", 2, -6)
-	detailMetaText:SetPoint("TOPRIGHT", detailHeader, "BOTTOMRIGHT", -2, -6)
+	detailMetaText:SetPoint("TOPLEFT", detailHeader, "BOTTOMLEFT", 2, -48)
+	detailMetaText:SetPoint("TOPRIGHT", detailHeader, "BOTTOMRIGHT", -2, -48)
 	detailMetaText:SetJustifyH("LEFT")
 	detailMetaText:SetText("Money: -   COD: -")
 	detailMetaText:SetTextColor(unpack(THEME_TEXT.detailMeta))
 	GM.UI.detailMetaText = detailMetaText
 
-	local detailItemHitArea = CreateFrame("Button", nil, detailPanel)
-	detailItemHitArea:SetPoint("TOPLEFT", detailMetaText, "BOTTOMLEFT", -1, -4)
+	local detailItemHitArea = CreateFrame("Frame", nil, detailPanel)
+	detailItemHitArea:SetPoint("TOPLEFT", detailHeader, "BOTTOMLEFT", 1, -8)
 	detailItemHitArea:SetPoint("TOPRIGHT", detailPanel, "TOPRIGHT", -10, -4)
-	detailItemHitArea:SetHeight(22)
-	detailItemHitArea:SetHitRectInsets(0, 0, -2, -2)
-	detailItemHitArea:EnableMouse(true)
-	detailItemHitArea:SetScript("OnEnter", function(self)
+	detailItemHitArea:SetHeight(38)
+	GM.UI.detailItemHitArea = detailItemHitArea
+
+	local detailItemTooltipArea = CreateFrame("Button", nil, detailItemHitArea)
+	detailItemTooltipArea:SetPoint("TOPLEFT", detailItemHitArea, "TOPLEFT", 1, -4)
+	detailItemTooltipArea:SetSize(30, 30)
+	detailItemTooltipArea:SetHitRectInsets(0, 0, -2, -2)
+	detailItemTooltipArea:EnableMouse(true)
+	local function HideDetailCompareTooltips()
+		if GameTooltip_HideShoppingTooltips and GameTooltip then
+			GameTooltip_HideShoppingTooltips(GameTooltip)
+		end
+		if ShoppingTooltip1 then
+			ShoppingTooltip1:Hide()
+		end
+		if ShoppingTooltip2 then
+			ShoppingTooltip2:Hide()
+		end
+	end
+	detailItemTooltipArea:SetScript("OnEnter", function(self)
 		if not GM.UI or not GM.UI.detailItemMailIndex then
 			return
 		end
+		local tooltipOwner = (GM.UI and GM.UI.detailItemIcon) or self
 		if GameTooltip and GameTooltip.SetInboxItem then
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetOwner(tooltipOwner, "ANCHOR_NONE")
+			GameTooltip:ClearAllPoints()
+			GameTooltip:SetPoint("TOPRIGHT", tooltipOwner, "TOPLEFT", -8, 0)
 			local hasTooltip = GameTooltip:SetInboxItem(GM.UI.detailItemMailIndex, 1)
 			if hasTooltip then
 				GameTooltip:Show()
+				HideDetailCompareTooltips()
 				return
 			end
 		end
 		if GameTooltip and GM.UI.detailItemLink and GameTooltip.SetHyperlink then
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetOwner(tooltipOwner, "ANCHOR_NONE")
+			GameTooltip:ClearAllPoints()
+			GameTooltip:SetPoint("TOPRIGHT", tooltipOwner, "TOPLEFT", -8, 0)
 			GameTooltip:SetHyperlink(GM.UI.detailItemLink)
 			GameTooltip:Show()
+			HideDetailCompareTooltips()
 		end
 	end)
-	detailItemHitArea:SetScript("OnLeave", function()
-		if GameTooltip and GameTooltip:IsOwned(detailItemHitArea) then
+	detailItemTooltipArea:SetScript("OnLeave", function()
+		HideDetailCompareTooltips()
+		if GameTooltip and GameTooltip:IsOwned(detailItemTooltipArea) then
 			GameTooltip:Hide()
 		end
 	end)
-	detailItemHitArea:SetScript("OnHide", function()
-		if GameTooltip and GameTooltip:IsOwned(detailItemHitArea) then
+	detailItemTooltipArea:SetScript("OnUpdate", function(self)
+		if not GameTooltip or not GameTooltip:IsOwned(self) then
+			return
+		end
+		if not self:IsMouseOver() then
+			HideDetailCompareTooltips()
 			GameTooltip:Hide()
 		end
 	end)
-	detailItemHitArea:EnableMouse(false)
-	GM.UI.detailItemHitArea = detailItemHitArea
+	detailItemTooltipArea:SetScript("OnHide", function()
+		HideDetailCompareTooltips()
+		if GameTooltip and GameTooltip:IsOwned(detailItemTooltipArea) then
+			GameTooltip:Hide()
+		end
+	end)
+	detailItemTooltipArea:EnableMouse(false)
+	GM.UI.detailItemTooltipArea = detailItemTooltipArea
 
-	local detailItemIcon = detailPanel:CreateTexture(nil, "ARTWORK")
-	detailItemIcon:SetSize(20, 20)
-	detailItemIcon:SetPoint("LEFT", detailItemHitArea, "LEFT", 1, 0)
+	local detailItemIcon = detailItemHitArea:CreateTexture(nil, "ARTWORK")
+	detailItemIcon:SetSize(30, 30)
+	detailItemIcon:SetPoint("LEFT", detailItemHitArea, "LEFT", 2, 0)
 	detailItemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	detailItemIcon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+	detailItemIcon:SetTexture("Interface\\Buttons\\UI-EmptySlot-Disabled")
 	GM.UI.detailItemIcon = detailItemIcon
 
-	local detailItemIconBorder = detailPanel:CreateTexture(nil, "OVERLAY")
-	detailItemIconBorder:SetPoint("TOPLEFT", detailItemIcon, "TOPLEFT", -1, 1)
-	detailItemIconBorder:SetPoint("BOTTOMRIGHT", detailItemIcon, "BOTTOMRIGHT", 1, -1)
-	detailItemIconBorder:SetColorTexture(unpack(THEME.detailItemBorder))
+	local detailItemIconBorder = CreateFrame("Frame", nil, detailItemHitArea, "BackdropTemplate")
+	detailItemIconBorder:SetPoint("TOPLEFT", detailItemIcon, "TOPLEFT", -2, 2)
+	detailItemIconBorder:SetPoint("BOTTOMRIGHT", detailItemIcon, "BOTTOMRIGHT", 2, -2)
+	detailItemIconBorder:SetBackdrop({
+		edgeFile = "Interface\\Buttons\\WHITE8x8",
+		edgeSize = 1,
+	})
+	detailItemIconBorder:SetBackdropBorderColor(unpack(THEME.detailItemBorder))
 	GM.UI.detailItemIconBorder = detailItemIconBorder
 
-	local detailItemCountText = detailPanel:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
-	detailItemCountText:SetPoint("BOTTOMRIGHT", detailItemIcon, "BOTTOMRIGHT", -1, 1)
+	local detailItemCountText = detailItemHitArea:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+	detailItemCountText:SetPoint("BOTTOMRIGHT", detailItemIcon, "BOTTOMRIGHT", -2, 2)
 	detailItemCountText:SetText("")
 	detailItemCountText:SetTextColor(1.0, 1.0, 1.0)
 	GM.UI.detailItemCountText = detailItemCountText
 
-	local detailItemText = detailPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	detailItemText:SetPoint("LEFT", detailItemIcon, "RIGHT", 6, 0)
+	local detailItemText = detailItemHitArea:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	detailItemText:SetPoint("LEFT", detailItemIcon, "RIGHT", 8, 0)
 	detailItemText:SetPoint("RIGHT", detailItemHitArea, "RIGHT", -2, 0)
 	detailItemText:SetJustifyH("LEFT")
+	detailItemText:SetWordWrap(false)
 	detailItemText:SetText("No item attachment")
 	detailItemText:SetTextColor(unpack(THEME_TEXT.detailItem))
 	GM.UI.detailItemText = detailItemText
@@ -2036,8 +2257,8 @@ function GM.UI.Initialize()
 	GM.UI.detailCollectButton = detailCollectButton
 
 	local detailBodyFrame = CreateFrame("Frame", nil, detailPanel, "BackdropTemplate")
-	detailBodyFrame:SetPoint("TOPLEFT", detailItemText, "BOTTOMLEFT", -7, -6)
-	detailBodyFrame:SetPoint("TOPRIGHT", detailItemText, "BOTTOMRIGHT", 2, -6)
+	detailBodyFrame:SetPoint("TOPLEFT", detailMetaText, "BOTTOMLEFT", -1, -6)
+	detailBodyFrame:SetPoint("TOPRIGHT", detailMetaText, "BOTTOMRIGHT", 1, -6)
 	detailBodyFrame:SetPoint("BOTTOMLEFT", detailPanel, "BOTTOMLEFT", 8, 32)
 	detailBodyFrame:SetPoint("BOTTOMRIGHT", detailPanel, "BOTTOMRIGHT", -8, 32)
 	detailBodyFrame:SetBackdrop({
@@ -2162,6 +2383,7 @@ function GM.UI.OnMailShow()
 	if GM.UI then
 		GM.UI.refreshAwaitingCompletion = false
 		GM.UI.showingDefaultUI = false
+		GM.UI.closingByX = false
 		GM.UI.viewMode = "inbox"
 	end
 	HideRefreshNotice()
@@ -2174,12 +2396,14 @@ function GM.UI.OnMailClosed()
 	if GM.UI then
 		GM.UI.refreshAwaitingCompletion = false
 		GM.UI.showingDefaultUI = false
+		GM.UI.closingByX = false
 	end
 	StopRefreshCooldown()
 	HideRefreshNotice()
 	SetDetailPanelOpen(false)
 	CloseDefaultMailDetailPanels()
 	if MailFrame then
+		SetDefaultInboxInteractionEnabled(true)
 		MailFrame:SetAlpha(1)
 		MailFrame:EnableMouse(true)
 	end

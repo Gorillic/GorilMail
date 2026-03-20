@@ -88,23 +88,79 @@ local function FormatMoneyText(copper)
 	return tostring(amount)
 end
 
+local function Colorize(hex, text)
+	local value = tostring(text or "")
+	local color = tostring(hex or ""):gsub("#", "")
+	if color:match("^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$") then
+		return "|cff" .. color .. value .. "|r"
+	end
+	return value
+end
+
+local function ParseItemContextFromSubject(subject)
+	local text = tostring(subject or "")
+	if text == "" then
+		return nil, nil
+	end
+
+	local core = text:match(":%s*(.+)$") or text
+	core = core:gsub("^%s+", ""):gsub("%s+$", "")
+	if core == "" then
+		return nil, nil
+	end
+
+	local count = tonumber(core:match("%((%d+)%)%s*$"))
+	if count and count > 0 then
+		core = core:gsub("%s*%(%d+%)%s*$", "")
+		core = core:gsub("^%s+", ""):gsub("%s+$", "")
+	end
+
+	if core == "" then
+		core = nil
+	end
+
+	return core, count
+end
+
 local function BuildCollectFeedback(action)
 	if not action then
 		return nil
 	end
-	if action.kind == "money" then
-		return "Gold collected = " .. FormatMoneyText(action.money or action.value)
+
+	local itemHex = "E8E0CF"
+	local countHex = "C9D4E6"
+	local moneyHex = "F0C35A"
+	local moneyText = Colorize(moneyHex, FormatMoneyText(action.money or action.value))
+	local itemName = tostring(action.itemName or "")
+	local itemCount = tonumber(action.itemCount)
+	local subjectName, subjectCount = ParseItemContextFromSubject(action.subject)
+
+	if itemName == "" and subjectName and subjectName ~= "" then
+		itemName = subjectName
+	end
+	if (not itemCount or itemCount < 1) and subjectCount and subjectCount > 0 then
+		itemCount = subjectCount
 	end
 
-	local count = tonumber(action.itemCount) or 1
+	if action.kind == "money" then
+		if itemName ~= "" then
+			local countText = tostring((itemCount and itemCount > 0) and itemCount or 1)
+			return Colorize(itemHex, itemName) .. " " .. Colorize(countHex, "x" .. countText) .. " = " .. moneyText
+		end
+		if itemCount and itemCount > 0 then
+			return Colorize(itemHex, "Item") .. " " .. Colorize(countHex, "x" .. tostring(itemCount)) .. " = " .. moneyText
+		end
+		return "Gold collected = " .. moneyText
+	end
+
+	local count = tonumber(itemCount) or 1
 	if count < 1 then
 		count = 1
 	end
-	local itemName = tostring(action.itemName or "")
 	if itemName == "" then
 		itemName = "Item"
 	end
-	return itemName .. " x" .. tostring(count) .. " = " .. FormatMoneyText(action.money)
+	return Colorize(itemHex, itemName) .. " " .. Colorize(countHex, "x" .. tostring(count)) .. " = " .. moneyText
 end
 
 local function BuildFingerprint(row)
@@ -249,6 +305,7 @@ function AdvanceQueue(rows)
 					money = row.money or 0,
 					itemName = itemName,
 					itemCount = itemCount,
+					subject = row.subject,
 					index = row.index,
 					retries = 0,
 				}
@@ -258,7 +315,14 @@ function AdvanceQueue(rows)
 				return
 			end
 			if row.money and row.money > 0 then
-				pendingAction = { kind = "money", value = row.money, money = row.money, index = row.index, retries = 0 }
+				pendingAction = {
+					kind = "money",
+					value = row.money,
+					money = row.money,
+					subject = row.subject,
+					index = row.index,
+					retries = 0,
+				}
 				ExecutePendingAction(pendingAction)
 				runtimeState = "waitingRefresh"
 				StartWaitTimeout()
