@@ -7,13 +7,14 @@ GM.UI = GM.UI or {}
 local ROW_HEIGHT = 19
 local VISIBLE_ROW_COUNT = 10
 local COL_GAP = 5
+local COL_SUBJECT_MONEY_GAP = 7
 local COL_SENDER = 100
 local COL_SUBJECT = 150
-local COL_MONEY = 100
+local COL_MONEY = 136
 local COL_COD = 48
 local COL_ITEM = 40
 local COL_STATE = 38
-local COL_ACTION = 42
+local COL_ACTION = 40
 local REFRESH_COOLDOWN_SECONDS = 10
 local DETAIL_PANEL_WIDTH = 246
 local DETAIL_PANEL_HEIGHT = 232
@@ -23,6 +24,8 @@ local RESIZE_MIN_HEIGHT = 340
 local RESIZE_MAX_WIDTH = 1600
 local RESIZE_MAX_HEIGHT = 1200
 local RESIZE_THROTTLE_SECONDS = 0.05
+local DEFAULT_FRAME_WIDTH = 668
+local DEFAULT_FRAME_HEIGHT = 350
 local RenderInboxRows
 local EnsureVisibleRows
 local ApplyResizeLayout
@@ -797,8 +800,11 @@ ApplyMailSwapVisibility = function()
 			returnButton:Show()
 		end
 	else
-		SetDefaultMailPanelWindowRegistered(false)
-		SetDefaultMailPanelManaged(false)
+		local deferBookkeeping = GM.UI and GM.UI.deferFirstMailFrameBookkeeping
+		if not deferBookkeeping then
+			SetDefaultMailPanelWindowRegistered(false)
+			SetDefaultMailPanelManaged(false)
+		end
 		CloseDefaultMailDetailPanels()
 		SetDefaultInboxInteractionEnabled(false)
 		MailFrame:SetAlpha(0)
@@ -810,6 +816,18 @@ ApplyMailSwapVisibility = function()
 		end
 		if returnButton then
 			returnButton:Hide()
+		end
+		if deferBookkeeping then
+			GM.UI.deferFirstMailFrameBookkeeping = false
+			C_Timer.After(0, function()
+				if not GM.UI or GM.UI.showingDefaultUI then
+					return
+				end
+				if not MailFrame or not MailFrame.IsShown or not MailFrame:IsShown() then
+					return
+				end
+				ApplyMailSwapVisibility()
+			end)
 		end
 	end
 end
@@ -1094,6 +1112,47 @@ local function FormatMoney(copper)
 		return GetCoinTextureString(copper)
 	end
 	return tostring(copper)
+end
+
+local function UpdateRowMoneyCell(row, copper)
+	if not row or not row.money then
+		return
+	end
+	local value = tonumber(copper) or 0
+	if value < 0 then
+		value = 0
+	end
+
+	local gold = math.floor(value / 10000)
+	local silver = math.floor((value % 10000) / 100)
+	local copperOnly = value % 100
+	local hasMoney = value > 0
+
+	if row.moneyGoldText then
+		row.moneyGoldText:SetText(gold > 0 and tostring(gold) or "")
+	end
+	if row.moneySilverText then
+		row.moneySilverText:SetText((gold > 0 or silver > 0) and tostring(silver) or "")
+	end
+	if row.moneyCopperText then
+		row.moneyCopperText:SetText(tostring(copperOnly))
+	end
+	if row.moneyDashText then
+		row.moneyDashText:SetText(hasMoney and "" or "-")
+	end
+
+	local goldAlpha = (gold > 0) and 1 or 0.30
+	local silverAlpha = (gold > 0 or silver > 0) and 1 or 0.30
+	local copperAlpha = hasMoney and 1 or 0.30
+	if row.moneyGoldIcon then
+		row.moneyGoldIcon:SetAlpha(goldAlpha)
+	end
+	if row.moneySilverIcon then
+		row.moneySilverIcon:SetAlpha(silverAlpha)
+	end
+	if row.moneyCopperIcon then
+		row.moneyCopperIcon:SetAlpha(copperAlpha)
+	end
 end
 
 local function UpdateInboxGoldText()
@@ -1512,7 +1571,7 @@ function RenderInboxRows()
 			row.isRead = data.wasRead and true or false
 			row.sender:SetText(data.sender)
 			row.subject:SetText(CompactSubject(data.subject))
-			row.money:SetText(FormatMoney(data.money))
+			UpdateRowMoneyCell(row, data.money)
 			row.cod:SetText(FormatMoney(data.codAmount))
 			local itemFlag = data.hasItem and "Yes" or "No"
 			local collectState = "OK"
@@ -1714,16 +1773,62 @@ local function CreateRow(container, index, yOffset)
 	row.sender:SetJustifyH("LEFT")
 
 	row.subject = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	row.subject:SetPoint("LEFT", row.sender, "RIGHT", COL_GAP, 0)
+	row.subject:SetPoint("LEFT", row.sender, "RIGHT", COL_GAP - 2, 0)
 	row.subject:SetWidth(COL_SUBJECT)
 	row.subject:SetJustifyH("LEFT")
 	row.subject:SetWordWrap(false)
 
-	row.money = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	row.money:SetPoint("LEFT", row.subject, "RIGHT", COL_GAP, 0)
-	row.money:SetWidth(COL_MONEY)
-	row.money:SetJustifyH("RIGHT")
-	row.money:SetWordWrap(false)
+	row.money = CreateFrame("Frame", nil, row)
+	row.money:SetPoint("LEFT", row.subject, "RIGHT", COL_SUBJECT_MONEY_GAP, 0)
+	row.money:SetSize(COL_MONEY, ROW_HEIGHT)
+
+	row.moneyCopperIcon = row.money:CreateTexture(nil, "OVERLAY")
+	row.moneyCopperSegment = CreateFrame("Frame", nil, row.money)
+	row.moneyCopperSegment:SetSize(26, ROW_HEIGHT)
+	row.moneyCopperSegment:SetPoint("RIGHT", row.money, "RIGHT", -1, 0)
+
+	row.moneyCopperIcon:SetSize(9, 9)
+	row.moneyCopperIcon:SetPoint("RIGHT", row.moneyCopperSegment, "RIGHT", 0, 0)
+	row.moneyCopperIcon:SetTexture("Interface\\MoneyFrame\\UI-CopperIcon")
+
+	row.moneyCopperText = row.moneyCopperSegment:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.moneyCopperText:SetPoint("LEFT", row.moneyCopperSegment, "LEFT", 0, 0)
+	row.moneyCopperText:SetPoint("RIGHT", row.moneyCopperIcon, "LEFT", -1, 0)
+	row.moneyCopperText:SetJustifyH("RIGHT")
+	row.moneyCopperText:SetWordWrap(false)
+
+	row.moneySilverSegment = CreateFrame("Frame", nil, row.money)
+	row.moneySilverSegment:SetSize(26, ROW_HEIGHT)
+	row.moneySilverSegment:SetPoint("RIGHT", row.moneyCopperSegment, "LEFT", -1, 0)
+
+	row.moneySilverIcon = row.money:CreateTexture(nil, "OVERLAY")
+	row.moneySilverIcon:SetSize(9, 9)
+	row.moneySilverIcon:SetPoint("RIGHT", row.moneySilverSegment, "RIGHT", 0, 0)
+	row.moneySilverIcon:SetTexture("Interface\\MoneyFrame\\UI-SilverIcon")
+
+	row.moneySilverText = row.moneySilverSegment:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.moneySilverText:SetPoint("LEFT", row.moneySilverSegment, "LEFT", 0, 0)
+	row.moneySilverText:SetPoint("RIGHT", row.moneySilverIcon, "LEFT", -1, 0)
+	row.moneySilverText:SetJustifyH("RIGHT")
+	row.moneySilverText:SetWordWrap(false)
+
+	row.moneyGoldIcon = row.money:CreateTexture(nil, "OVERLAY")
+	row.moneyGoldIcon:SetSize(9, 9)
+	row.moneyGoldIcon:SetPoint("RIGHT", row.moneySilverSegment, "LEFT", -1, 0)
+	row.moneyGoldIcon:SetTexture("Interface\\MoneyFrame\\UI-GoldIcon")
+
+	row.moneyGoldText = row.money:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.moneyGoldText:SetPoint("LEFT", row.money, "LEFT", 0, 0)
+	row.moneyGoldText:SetPoint("RIGHT", row.moneyGoldIcon, "LEFT", -1, 0)
+	row.moneyGoldText:SetJustifyH("RIGHT")
+	row.moneyGoldText:SetWordWrap(false)
+
+	row.moneyDashText = row.money:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.moneyDashText:SetPoint("RIGHT", row.money, "RIGHT", -1, 0)
+	row.moneyDashText:SetText("")
+	row.moneyDashText:SetWordWrap(false)
+
+	UpdateRowMoneyCell(row, 0)
 
 	row.cod = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	row.cod:SetPoint("LEFT", row.money, "RIGHT", COL_GAP, 0)
@@ -1807,13 +1912,47 @@ ApplyResizeLayout = function(forceRender)
 	GM.UI.layoutApplying = false
 end
 
+local function GetSafeResizeMaxHeight(frame)
+	local parentHeight = (UIParent and UIParent:GetHeight()) or RESIZE_MAX_HEIGHT
+	local hardMax = math.min(RESIZE_MAX_HEIGHT, math.max(RESIZE_MIN_HEIGHT, parentHeight - 16))
+	if not frame or not UIParent or not UIParent.GetBottom or not frame.GetTop then
+		return hardMax
+	end
+	local uiBottom = UIParent:GetBottom() or 0
+	local frameTop = frame:GetTop()
+	if not frameTop then
+		return hardMax
+	end
+	local fromTop = math.floor(frameTop - uiBottom - 8)
+	if fromTop < RESIZE_MIN_HEIGHT then
+		return RESIZE_MIN_HEIGHT
+	end
+	return math.min(hardMax, fromTop)
+end
+
+local function GetSafeResizeHeight(frame, rawHeight, preferDefaultWhenInvalid)
+	local minH = RESIZE_MIN_HEIGHT
+	local maxH = GetSafeResizeMaxHeight(frame)
+	if maxH < minH then
+		maxH = minH
+	end
+	local candidate = tonumber(rawHeight) or minH
+	local isInvalid = candidate < minH or candidate > maxH
+	if preferDefaultWhenInvalid and isInvalid then
+		candidate = math.min(maxH, math.max(minH, DEFAULT_FRAME_HEIGHT))
+	else
+		candidate = math.min(maxH, math.max(minH, candidate))
+	end
+	return candidate, maxH
+end
+
 function GM.UI.Initialize()
 	if GM.UI.frame then
 		return
 	end
 
 	local frame = CreateFrame("Frame", "GorilMailPanel", UIParent, "BackdropTemplate")
-	frame:SetSize(668, 350)
+	frame:SetSize(DEFAULT_FRAME_WIDTH, DEFAULT_FRAME_HEIGHT)
 	frame:SetPoint("CENTER", UIParent, "CENTER", 180, 0)
 	if not RestoreMainFramePosition(frame) then
 		frame:ClearAllPoints()
@@ -1824,10 +1963,11 @@ function GM.UI.Initialize()
 	frame:SetClampedToScreen(true)
 	frame:SetMovable(true)
 	frame:SetResizable(true)
+	GM.UI.fixedResizeWidth = DEFAULT_FRAME_WIDTH
 	if frame.SetResizeBounds then
-		frame:SetResizeBounds(RESIZE_MIN_WIDTH, RESIZE_MIN_HEIGHT, RESIZE_MAX_WIDTH, RESIZE_MAX_HEIGHT)
+		frame:SetResizeBounds(DEFAULT_FRAME_WIDTH, RESIZE_MIN_HEIGHT, DEFAULT_FRAME_WIDTH, RESIZE_MAX_HEIGHT)
 	elseif frame.SetMinResize then
-		frame:SetMinResize(RESIZE_MIN_WIDTH, RESIZE_MIN_HEIGHT)
+		frame:SetMinResize(DEFAULT_FRAME_WIDTH, RESIZE_MIN_HEIGHT)
 	end
 	frame:EnableMouse(true)
 	frame:RegisterForDrag("LeftButton")
@@ -1836,13 +1976,21 @@ function GM.UI.Initialize()
 		self:StopMovingOrSizing()
 		SaveMainFramePosition(self)
 		PositionDetailPanel()
+		local fixedW = GM.UI and GM.UI.fixedResizeWidth or DEFAULT_FRAME_WIDTH
+		local safeH = GetSafeResizeHeight(self, self:GetHeight(), true)
+		if math.abs((self:GetWidth() or fixedW) - fixedW) > 0.5 or math.abs((self:GetHeight() or safeH) - safeH) > 0.5 then
+			GM.UI.layoutApplying = true
+			self:SetSize(fixedW, safeH)
+			GM.UI.layoutApplying = false
+		end
 	end)
 	frame:SetScript("OnSizeChanged", function(self, width, height)
 		if GM.UI and GM.UI.layoutApplying then
 			return
 		end
-		local clampedWidth = math.min(RESIZE_MAX_WIDTH, math.max(RESIZE_MIN_WIDTH, width or self:GetWidth() or RESIZE_MIN_WIDTH))
-		local clampedHeight = math.min(RESIZE_MAX_HEIGHT, math.max(RESIZE_MIN_HEIGHT, height or self:GetHeight() or RESIZE_MIN_HEIGHT))
+		local fixedWidth = GM.UI and GM.UI.fixedResizeWidth or DEFAULT_FRAME_WIDTH
+		local clampedWidth = fixedWidth
+		local clampedHeight = GetSafeResizeHeight(self, height or self:GetHeight() or RESIZE_MIN_HEIGHT, false)
 		if math.abs((self:GetWidth() or clampedWidth) - clampedWidth) > 0.5 or math.abs((self:GetHeight() or clampedHeight) - clampedHeight) > 0.5 then
 			GM.UI.layoutApplying = true
 			self:SetSize(clampedWidth, clampedHeight)
@@ -1862,6 +2010,18 @@ function GM.UI.Initialize()
 		if not GM.UI.isResizing then
 			PositionDetailPanel()
 			ApplyResizeLayout(true)
+		end
+	end)
+	frame:SetScript("OnShow", function(self)
+		local fixedWidth = GM.UI and GM.UI.fixedResizeWidth or DEFAULT_FRAME_WIDTH
+		local safeHeight = GetSafeResizeHeight(self, self:GetHeight(), true)
+		if math.abs((self:GetWidth() or fixedWidth) - fixedWidth) > 0.5 or math.abs((self:GetHeight() or safeHeight) - safeHeight) > 0.5 then
+			GM.UI.layoutApplying = true
+			self:SetSize(fixedWidth, safeHeight)
+			GM.UI.layoutApplying = false
+		end
+		if EnsureVisibleRows then
+			EnsureVisibleRows()
 		end
 	end)
 	frame:SetScript("OnHide", function()
@@ -1934,7 +2094,7 @@ function GM.UI.Initialize()
 				ApplyResizeLayout(false)
 			end
 		end)
-		frame:StartSizing("BOTTOMRIGHT")
+		frame:StartSizing("BOTTOM")
 	end)
 	resizeHandle:SetScript("OnMouseUp", function(_, button)
 		if button and button ~= "LeftButton" then
@@ -2221,15 +2381,15 @@ function GM.UI.Initialize()
 	GM.UI.sendPanel = sendPanel
 
 	local sendRecipientLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendRecipientLabel:SetPoint("TOPLEFT", sendPanel, "TOPLEFT", 10, -12)
+	sendRecipientLabel:SetPoint("TOPLEFT", sendPanel, "TOPLEFT", 10, -10)
 	sendRecipientLabel:SetText("Recipient")
 	GM.UI.sendRecipientLabel = sendRecipientLabel
 
 	local sendRecipientInput = CreateFrame("EditBox", nil, sendPanel, "InputBoxTemplate")
 	sendRecipientInput:SetAutoFocus(false)
 	sendRecipientInput:SetHeight(20)
-	sendRecipientInput:SetPoint("TOPLEFT", sendRecipientLabel, "BOTTOMLEFT", 0, -4)
-	sendRecipientInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -16)
+	sendRecipientInput:SetPoint("TOPLEFT", sendRecipientLabel, "BOTTOMLEFT", 0, -2)
+	sendRecipientInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -12)
 	sendRecipientInput:SetScript("OnEscapePressed", function(self)
 		self:ClearFocus()
 	end)
@@ -2242,15 +2402,15 @@ function GM.UI.Initialize()
 	GM.UI.sendRecipientInput = sendRecipientInput
 
 	local sendSubjectLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendSubjectLabel:SetPoint("TOPLEFT", sendRecipientInput, "BOTTOMLEFT", 0, -12)
+	sendSubjectLabel:SetPoint("TOPLEFT", sendRecipientInput, "BOTTOMLEFT", 0, -8)
 	sendSubjectLabel:SetText("Subject")
 	GM.UI.sendSubjectLabel = sendSubjectLabel
 
 	local sendSubjectInput = CreateFrame("EditBox", nil, sendPanel, "InputBoxTemplate")
 	sendSubjectInput:SetAutoFocus(false)
 	sendSubjectInput:SetHeight(20)
-	sendSubjectInput:SetPoint("TOPLEFT", sendSubjectLabel, "BOTTOMLEFT", 0, -4)
-	sendSubjectInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -52)
+	sendSubjectInput:SetPoint("TOPLEFT", sendSubjectLabel, "BOTTOMLEFT", 0, -2)
+	sendSubjectInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -46)
 	sendSubjectInput:SetScript("OnEscapePressed", function(self)
 		self:ClearFocus()
 	end)
@@ -2260,7 +2420,7 @@ function GM.UI.Initialize()
 	GM.UI.sendSubjectInput = sendSubjectInput
 
 	local sendGoldLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendGoldLabel:SetPoint("TOPLEFT", sendSubjectInput, "BOTTOMLEFT", 0, -12)
+	sendGoldLabel:SetPoint("TOPLEFT", sendSubjectInput, "BOTTOMLEFT", 0, -8)
 	sendGoldLabel:SetText("Gold (copper)")
 	GM.UI.sendGoldLabel = sendGoldLabel
 
@@ -2268,8 +2428,8 @@ function GM.UI.Initialize()
 	sendGoldInput:SetAutoFocus(false)
 	sendGoldInput:SetHeight(20)
 	sendGoldInput:SetNumeric(false)
-	sendGoldInput:SetPoint("TOPLEFT", sendGoldLabel, "BOTTOMLEFT", 0, -4)
-	sendGoldInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -88)
+	sendGoldInput:SetPoint("TOPLEFT", sendGoldLabel, "BOTTOMLEFT", 0, -2)
+	sendGoldInput:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -12, -80)
 	sendGoldInput:SetScript("OnEscapePressed", function(self)
 		self:ClearFocus()
 	end)
@@ -2279,13 +2439,13 @@ function GM.UI.Initialize()
 	GM.UI.sendGoldInput = sendGoldInput
 
 	local sendAttachmentLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendAttachmentLabel:SetPoint("TOPLEFT", sendGoldInput, "BOTTOMLEFT", 0, -12)
+	sendAttachmentLabel:SetPoint("TOPLEFT", sendGoldInput, "BOTTOMLEFT", 0, -8)
 	sendAttachmentLabel:SetText("Attachment")
 	GM.UI.sendAttachmentLabel = sendAttachmentLabel
 
 	local sendAttachmentSlot = CreateFrame("Button", nil, sendPanel, "BackdropTemplate")
-	sendAttachmentSlot:SetSize(32, 32)
-	sendAttachmentSlot:SetPoint("TOPLEFT", sendAttachmentLabel, "BOTTOMLEFT", 0, -4)
+	sendAttachmentSlot:SetSize(28, 28)
+	sendAttachmentSlot:SetPoint("TOPLEFT", sendAttachmentLabel, "BOTTOMLEFT", 0, -2)
 	sendAttachmentSlot:SetBackdrop({
 		bgFile = "Interface\\Buttons\\WHITE8x8",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -2345,7 +2505,7 @@ function GM.UI.Initialize()
 	GM.UI.sendAttachmentNameText = sendAttachmentNameText
 
 	local sendCODToggle = CreateFrame("CheckButton", nil, sendPanel, "UICheckButtonTemplate")
-	sendCODToggle:SetPoint("TOPLEFT", sendAttachmentSlot, "TOPRIGHT", 8, -20)
+	sendCODToggle:SetPoint("TOPLEFT", sendAttachmentSlot, "TOPRIGHT", 8, -14)
 	sendCODToggle:SetScript("OnClick", function()
 		UpdateSendCODInputState()
 	end)
@@ -2357,15 +2517,15 @@ function GM.UI.Initialize()
 	GM.UI.sendCODLabel = sendCODLabel
 
 	local sendCODAmountLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendCODAmountLabel:SetPoint("LEFT", sendCODLabel, "RIGHT", 10, 0)
+	sendCODAmountLabel:SetPoint("LEFT", sendCODLabel, "RIGHT", 8, 0)
 	sendCODAmountLabel:SetText("Amount")
 	GM.UI.sendCODAmountLabel = sendCODAmountLabel
 
 	local sendCODInput = CreateFrame("EditBox", nil, sendPanel, "InputBoxTemplate")
 	sendCODInput:SetAutoFocus(false)
-	sendCODInput:SetHeight(20)
+	sendCODInput:SetHeight(18)
 	sendCODInput:SetNumeric(false)
-	sendCODInput:SetWidth(110)
+	sendCODInput:SetWidth(96)
 	sendCODInput:SetPoint("LEFT", sendCODAmountLabel, "RIGHT", 6, 0)
 	sendCODInput:SetScript("OnEscapePressed", function(self)
 		self:ClearFocus()
@@ -2407,13 +2567,13 @@ function GM.UI.Initialize()
 	GM.UI.sendAttachmentEventFrame = sendAttachmentEventFrame
 
 	local sendBodyLabel = sendPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	sendBodyLabel:SetPoint("TOPLEFT", sendAttachmentSlot, "BOTTOMLEFT", 0, -12)
+	sendBodyLabel:SetPoint("TOPLEFT", sendAttachmentSlot, "BOTTOMLEFT", 0, -8)
 	sendBodyLabel:SetText("Message")
 	GM.UI.sendBodyLabel = sendBodyLabel
 
 	local sendBodyFrame = CreateFrame("Frame", nil, sendPanel, "BackdropTemplate")
-	sendBodyFrame:SetPoint("TOPLEFT", sendBodyLabel, "BOTTOMLEFT", 0, -4)
-	sendBodyFrame:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -10, -176)
+	sendBodyFrame:SetPoint("TOPLEFT", sendBodyLabel, "BOTTOMLEFT", 0, -3)
+	sendBodyFrame:SetPoint("TOPRIGHT", sendPanel, "TOPRIGHT", -10, -152)
 	sendBodyFrame:SetPoint("BOTTOMLEFT", sendPanel, "BOTTOMLEFT", 10, 40)
 	sendBodyFrame:SetPoint("BOTTOMRIGHT", sendPanel, "BOTTOMRIGHT", -10, 40)
 	sendBodyFrame:SetBackdrop({
@@ -2501,6 +2661,7 @@ function GM.UI.Initialize()
 	})
 	detailPanel:SetBackdropColor(unpack(THEME.detailBg))
 	detailPanel:SetBackdropBorderColor(unpack(THEME.detailBorder))
+	detailPanel:EnableMouse(true)
 	detailPanel:Hide()
 	GM.UI.detailPanel = detailPanel
 	GM.UI.detailPanelOpen = false
@@ -2715,9 +2876,11 @@ function GM.UI.Initialize()
 
 	local x = 4
 	CreateHeaderCell(header, "Sender", COL_SENDER, x, "LEFT")
-	x = x + COL_SENDER + COL_GAP
+	-- Row content starts 10px further right than header baseline (dot + row insets).
+	-- Shift Subject and following headers to match row column starts.
+	x = x + COL_SENDER + COL_GAP + 8
 	CreateHeaderCell(header, "Subject", COL_SUBJECT, x, "LEFT")
-	x = x + COL_SUBJECT + COL_GAP
+	x = x + COL_SUBJECT + COL_SUBJECT_MONEY_GAP
 	CreateHeaderCell(header, "Money", COL_MONEY, x, "RIGHT")
 	x = x + COL_MONEY + COL_GAP
 	CreateHeaderCell(header, "COD", COL_COD, x, "CENTER")
@@ -2795,6 +2958,10 @@ function GM.UI.OnMailShow()
 		GM.UI.showingDefaultUI = false
 		GM.UI.closingByX = false
 		GM.UI.viewMode = "inbox"
+		if not GM.UI.mailSwapBootstrapDone then
+			GM.UI.mailSwapBootstrapDone = true
+			GM.UI.deferFirstMailFrameBookkeeping = true
+		end
 	end
 	SetSendPendingState(false)
 	HideRefreshNotice()
