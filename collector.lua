@@ -27,6 +27,7 @@ local eventFrame = CreateFrame("Frame")
 local runtimeNote = nil
 local waitTimer = nil
 local WAIT_TIMEOUT_SECONDS = 2.5
+local ISSUE_DEFER_SECONDS = 0.15
 local AdvanceQueue
 
 local function ResetPreparedData()
@@ -173,6 +174,14 @@ local function BuildFingerprint(row)
 	}, "|")
 end
 
+local function BuildIdentityFingerprint(row)
+	return table.concat({
+		tostring(row.sender or ""),
+		tostring(row.subject or ""),
+		tostring(row.codAmount or 0),
+	}, "|")
+end
+
 local function FindRowByIndex(rows, index)
 	for i = 1, #rows do
 		if rows[i].index == index then
@@ -260,6 +269,85 @@ local function ExecutePendingAction(action)
 	return false
 end
 
+local function IsCommandPending()
+	if C_Mail and C_Mail.IsCommandPending then
+		return C_Mail.IsCommandPending() and true or false
+	end
+	return false
+end
+
+local function TryIssuePendingAction(action)
+	if not action then
+		return false
+	end
+	if IsCommandPending() then
+		runtimeNote = "Waiting command slot"
+		C_Timer.After(ISSUE_DEFER_SECONDS, function()
+			if runtimeState ~= "collecting" then
+				return
+			end
+			if pendingAction ~= action then
+				return
+			end
+			TryIssuePendingAction(action)
+		end)
+		return false
+	end
+
+	if not ExecutePendingAction(action) then
+		return false
+	end
+
+	runtimeState = "waitingRefresh"
+	StartWaitTimeout()
+	return true
+end
+
+local function FindPendingRow(rows, action)
+	if type(rows) ~= "table" or not action then
+		return nil
+	end
+
+	local row = FindRowByIndex(rows, action.index)
+	if row and BuildIdentityFingerprint(row) == action.identityFingerprint then
+		return row
+	end
+
+	for i = 1, #rows do
+		local candidate = rows[i]
+		if BuildIdentityFingerprint(candidate) == action.identityFingerprint then
+			return candidate
+		end
+	end
+
+	return nil
+end
+
+local function IsActionApplied(rows, action)
+	if not action then
+		return false
+	end
+
+	local row = FindPendingRow(rows, action)
+	if not row then
+		return true
+	end
+
+	if action.kind == "money" then
+		return (row.money or 0) <= 0
+	end
+
+	if action.kind == "item" then
+		return not row.hasItem
+	end
+
+	if action.kind == "itemMoney" then
+		return (not row.hasItem) and ((row.money or 0) <= 0)
+	end
+
+	return false
+end
+
 function AdvanceQueue(rows)
 	while queueIndex <= #preparedList do
 		local entry = preparedList[queueIndex]
@@ -307,11 +395,10 @@ function AdvanceQueue(rows)
 					itemCount = itemCount,
 					subject = row.subject,
 					index = row.index,
+					identityFingerprint = BuildIdentityFingerprint(row),
 					retries = 0,
 				}
-				ExecutePendingAction(pendingAction)
-				runtimeState = "waitingRefresh"
-				StartWaitTimeout()
+				TryIssuePendingAction(pendingAction)
 				return
 			end
 			if row.money and row.money > 0 then
@@ -321,11 +408,10 @@ function AdvanceQueue(rows)
 					money = row.money,
 					subject = row.subject,
 					index = row.index,
+					identityFingerprint = BuildIdentityFingerprint(row),
 					retries = 0,
 				}
-				ExecutePendingAction(pendingAction)
-				runtimeState = "waitingRefresh"
-				StartWaitTimeout()
+				TryIssuePendingAction(pendingAction)
 				return
 			end
 			queueIndex = queueIndex + 1
@@ -421,7 +507,7 @@ function GM.Collector.OnInboxUpdate(rows)
 	end
 
 	ClearWaitTimeout()
-	if pendingAction then
+	if pendingAction and IsActionApplied(rows or {}, pendingAction) then
 		if pendingAction.kind == "money" then
 			sessionResult.collectedMoney = sessionResult.collectedMoney + (pendingAction.value or 0)
 			sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
@@ -438,6 +524,26 @@ function GM.Collector.OnInboxUpdate(rows)
 			PrintSuccess(feedback)
 		end
 		runtimeNote = nil
+	elseif pendingAction then
+		if IsCommandPending() then
+			runtimeNote = "Waiting command completion"
+			StartWaitTimeout()
+			return
+		end
+
+		if (pendingAction.retries or 0) < 1 then
+			pendingAction.retries = (pendingAction.retries or 0) + 1
+			runtimeNote = "Retrying unverified step"
+			PrintWarn("Retrying unverified mail step")
+			runtimeState = "collecting"
+			TryIssuePendingAction(pendingAction)
+			return
+		end
+
+		sessionResult.skippedCount = sessionResult.skippedCount + 1
+		sessionResult.skippedMissingCount = sessionResult.skippedMissingCount + 1
+		runtimeNote = "Skipped unverified step"
+		PrintWarn("Skipped unverified mail step")
 	end
 
 	pendingAction = nil
@@ -478,8 +584,8 @@ eventFrame:SetScript("OnEvent", function(_, eventName)
 			pendingAction.retries = (pendingAction.retries or 0) + 1
 			runtimeNote = "Retrying failed step"
 			PrintWarn("Retrying failed mail step")
-			ExecutePendingAction(pendingAction)
-			StartWaitTimeout()
+			runtimeState = "collecting"
+			TryIssuePendingAction(pendingAction)
 			return
 		end
 
