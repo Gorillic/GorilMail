@@ -35,35 +35,6 @@ It is built around a minimal, event-driven architecture:
 
 Slash commands:
 - `/gorilmail` -> toggle GorilMail panel
-- `/gmtelemetry` or `/gmtel` -> dump current collector session snapshot (debug/diagnostic)
-
-## How Collect All Works
-High-level flow:
-1. Prepare collectable rows from current mailbox snapshot.
-2. Build queue entries with row fingerprint/identity metadata.
-3. Issue one action at a time (`TakeInboxMoney` / `AutoLootMailItem`).
-4. Wait for update events and re-scan inbox rows.
-5. Validate action outcome.
-6. Advance queue only after outcome is resolved.
-
-Safety mechanisms:
-- Command pending guard (`C_Mail.IsCommandPending()`)
-- Deferred settle checks for transient timing issues
-- Ambiguity-safe identity matching (avoid unsafe forced row binds)
-- Explicit skip reasons and close telemetry in session snapshot
-
-## Session Snapshot / Diagnostics
-Collector snapshot includes:
-- final outcome counts,
-- skip reason distribution (`skipReasonCounts`),
-- last skip reason (`lastSkipReason`),
-- close source telemetry (`closeTelemetry`).
-
-Close telemetry currently tracks:
-- `source` (`event_mail_closed`, `mailframe_onhide`, `core_handle_mail_closed`)
-- `mailboxOpen`
-- `mailFrameShown`
-- `collectActive`
 
 ## Architecture
 Core files:
