@@ -1960,7 +1960,7 @@ local function StartCollectForSingleMail(mailIndex)
 	SetDetailPanelOpen(false)
 	local summary = GM.Collector.Prepare({ selectedRow })
 	SetStatusText("Prepared C:" .. tostring(summary.collectableCount) .. " B:" .. tostring(summary.blockedCount))
-	GM.Collector.Start(rows)
+	GM.Collector.Start(rows, "single")
 	RenderInboxRows()
 end
 
@@ -2986,7 +2986,7 @@ function GM.UI.Initialize()
 			SetStatusText("Prepared C:" .. tostring(summary.collectableCount) .. " B:" .. tostring(summary.blockedCount))
 		end
 
-		GM.Collector.Start(rows)
+		GM.Collector.Start(rows, "collectAll")
 		RenderInboxRows()
 	end)
 	StyleButton(collectButton, "primary")

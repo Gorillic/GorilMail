@@ -32,10 +32,17 @@ local queueIndex = 1
 local pendingAction = nil
 local eventFrame = CreateFrame("Frame")
 local runtimeNote = nil
+local currentRunSource = nil
 local waitTimer = nil
+local inboxUpdateDebounceTimer = nil
 local WAIT_TIMEOUT_SECONDS = 2.5
-local ISSUE_DEFER_SECONDS = 0.15
+local ISSUE_DEFER_SECONDS = 0.10
 local TRANSIENT_SETTLE_DEFER_SECONDS = 0.30
+local INBOX_UPDATE_BUCKET_SECONDS = 0.20
+local MOVED_SETTLE_MAX_WAITS = 2
+local UNVERIFIED_VERIFY_MAX_WAITS = 3
+local MAIL_FAILED_SETTLE_MAX_WAITS = 2
+local UI_TRANSIENT_SETTLE_MAX_WAITS = 3
 local debugEnabled = false
 local AdvanceQueue
 local DebugLog
@@ -55,6 +62,38 @@ local function GetFreshRows()
 	return rows
 end
 
+local function CancelInboxUpdateDebounce()
+	if inboxUpdateDebounceTimer then
+		inboxUpdateDebounceTimer:Cancel()
+		inboxUpdateDebounceTimer = nil
+	end
+end
+
+local function ProcessDebouncedInboxUpdate(trigger)
+	if runtimeState ~= "waitingRefresh" then
+		return
+	end
+	DebugLog("refresh", "snapshot begin " .. tostring(trigger or "bucket"))
+	local rows = GetFreshRows()
+	DebugLog("refresh", "snapshot rows=" .. tostring(#rows))
+	GM.Collector.OnInboxUpdate(rows)
+end
+
+local function ScheduleDebouncedInboxUpdate(trigger, delay)
+	if runtimeState ~= "waitingRefresh" then
+		return
+	end
+	local waitSeconds = tonumber(delay)
+	if not waitSeconds or waitSeconds < 0 then
+		waitSeconds = INBOX_UPDATE_BUCKET_SECONDS
+	end
+	CancelInboxUpdateDebounce()
+	inboxUpdateDebounceTimer = C_Timer.NewTimer(waitSeconds, function()
+		inboxUpdateDebounceTimer = nil
+		ProcessDebouncedInboxUpdate(trigger)
+	end)
+end
+
 local function ScheduleSettleValidation(action, delay, reason)
 	local waitSeconds = tonumber(delay) or ISSUE_DEFER_SECONDS
 	sessionResult.softRecoveryCount = (sessionResult.softRecoveryCount or 0) + 1
@@ -66,9 +105,7 @@ local function ScheduleSettleValidation(action, delay, reason)
 			return
 		end
 		DebugLog("refresh", "settle-probe " .. tostring(reason or "unknown"))
-		local rows = GetFreshRows()
-		DebugLog("refresh", "settle rows=" .. tostring(#rows))
-		GM.Collector.OnInboxUpdate(rows)
+		ScheduleDebouncedInboxUpdate("settle-" .. tostring(reason or "unknown"), 0.01)
 	end)
 end
 
@@ -142,7 +179,9 @@ local function ResetPreparedData()
 	queueIndex = 1
 	pendingAction = nil
 	runtimeNote = nil
+	currentRunSource = nil
 	finalSummaryEmitted = false
+	CancelInboxUpdateDebounce()
 end
 
 local function IsCollectActive()
@@ -392,7 +431,11 @@ local function BuildFinalOutcomes(finalState, rows)
 	end
 
 	for i = 1, preparedCount do
-		preparedList[i].finalOutcome = outcomes[i]
+		local entry = preparedList[i]
+		entry.finalOutcome = outcomes[i]
+		if outcomes[i] == "success" then
+			entry.skipReason = nil
+		end
 	end
 
 	return outcomes, successCount, skippedCount, failedCount
@@ -403,7 +446,8 @@ local function BuildSkipReasonTelemetry()
 	local lastReason = nil
 	for i = 1, #preparedList do
 		local entry = preparedList[i]
-		if entry and (entry.outcome == "skipped" or entry.outcome == "failed") then
+		local effectiveOutcome = entry and (entry.finalOutcome or entry.outcome) or nil
+		if entry and (effectiveOutcome == "skipped" or effectiveOutcome == "failed") then
 			local reason = entry.skipReason
 			if reason and reason ~= "" then
 				local key = tostring(reason)
@@ -435,6 +479,7 @@ local function BuildSessionSnapshot(finalState, abortReason)
 	local completedCount = finalSuccessCount + finalSkippedCount + finalFailedCount
 	local skipReasonCounts, lastSkipReason = BuildSkipReasonTelemetry()
 	return {
+		runSource = currentRunSource or "unknown",
 		preparedCount = preparedCount,
 		processedStepCount = processedCount,
 		completedCount = completedCount,
@@ -451,6 +496,38 @@ local function BuildSessionSnapshot(finalState, abortReason)
 		abortReason = sessionResult.abortReason,
 		finalState = sessionResult.finalState,
 		closeTelemetry = sessionResult.closeTelemetry,
+	}
+end
+
+local function BuildCollectDebugPayload(snapshot, summaryText)
+	local entries = {}
+	for i = 1, #preparedList do
+		local entry = preparedList[i]
+		entries[#entries + 1] = {
+			order = i,
+			index = entry and entry.index or nil,
+			outcome = entry and (entry.finalOutcome or entry.outcome) or nil,
+			skipReason = entry and entry.skipReason or nil,
+			identity = entry and entry.identityFingerprint or nil,
+			fingerprint = entry and entry.fingerprint or nil,
+		}
+	end
+
+	return {
+		summary = summaryText,
+		runSource = snapshot and snapshot.runSource or "unknown",
+		runtimeState = runtimeState,
+		runtimeNote = runtimeNote,
+		queueIndex = queueIndex,
+		pendingAction = DescribeAction(pendingAction),
+		preparedSummary = {
+			collectableCount = preparedSummary.collectableCount or 0,
+			blockedCount = preparedSummary.blockedCount or 0,
+			codCount = preparedSummary.codCount or 0,
+			emptyCount = preparedSummary.emptyCount or 0,
+		},
+		snapshot = snapshot,
+		entries = entries,
 	}
 end
 
@@ -485,6 +562,19 @@ local function CountIdentityMatches(rows, identityFingerprint)
 	return count
 end
 
+local function CountFingerprintMatches(rows, fingerprint)
+	if type(rows) ~= "table" or not fingerprint or fingerprint == "" then
+		return 0
+	end
+	local count = 0
+	for i = 1, #rows do
+		if BuildFingerprint(rows[i]) == fingerprint then
+			count = count + 1
+		end
+	end
+	return count
+end
+
 local function FindRowByIndex(rows, index)
 	for i = 1, #rows do
 		if rows[i].index == index then
@@ -506,6 +596,7 @@ end
 local function FinishCompleted()
 	runtimeState = "completed"
 	runtimeNote = nil
+	CancelInboxUpdateDebounce()
 	DebugLog("finalize", "completed")
 	if waitTimer then
 		waitTimer:Cancel()
@@ -621,6 +712,13 @@ local function FindPendingRow(rows, action)
 	end
 
 	if #candidates == 0 then
+		local previousSourceCount = tonumber(action.sourceFingerprintMatchCount) or 0
+		if previousSourceCount > 0 then
+			local currentSourceCount = CountFingerprintMatches(rows, action.sourceFingerprint)
+			if currentSourceCount < previousSourceCount then
+				return nil, "countDeltaApplied"
+			end
+		end
 		return nil, "missing"
 	end
 
@@ -641,6 +739,13 @@ local function FindPendingRow(rows, action)
 	end
 
 	local previousCount = tonumber(action.identityMatchCount) or 0
+	local previousSourceCount = tonumber(action.sourceFingerprintMatchCount) or 0
+	if previousSourceCount > 0 then
+		local currentSourceCount = CountFingerprintMatches(rows, action.sourceFingerprint)
+		if currentSourceCount < previousSourceCount then
+			return nil, "countDeltaApplied"
+		end
+	end
 	if previousCount > 1 then
 		if #candidates < previousCount then
 			return nil, "countDeltaApplied"
@@ -710,6 +815,39 @@ local function IsActionApplied(rows, action)
 	return false
 end
 
+local function CompletePendingActionSuccess(rows, tag)
+	if not pendingAction then
+		return false
+	end
+	DebugLog("validate", tostring(tag or "pass") .. " " .. DescribeAction(pendingAction))
+	local currentEntry = preparedList[queueIndex]
+	if currentEntry then
+		currentEntry.outcome = "success"
+		currentEntry.skipReason = nil
+	end
+	sessionResult.processedStepCount = sessionResult.processedStepCount + 1
+	if pendingAction.kind == "money" then
+		sessionResult.collectedMoney = sessionResult.collectedMoney + (pendingAction.value or 0)
+		sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
+	elseif pendingAction.kind == "itemMoney" then
+		sessionResult.collectedMoney = sessionResult.collectedMoney + (pendingAction.money or 0)
+		sessionResult.collectedItemCount = sessionResult.collectedItemCount + 1
+		sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
+	elseif pendingAction.kind == "item" then
+		sessionResult.collectedItemCount = sessionResult.collectedItemCount + 1
+		sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
+	end
+	local feedback = BuildCollectFeedback(pendingAction)
+	if feedback and feedback ~= "" then
+		PrintSuccess(feedback)
+	end
+	runtimeNote = nil
+	pendingAction = nil
+	queueIndex = queueIndex + 1
+	AdvanceQueue(rows or {})
+	return true
+end
+
 function AdvanceQueue(rows)
 	while queueIndex <= #preparedList do
 		local entry = preparedList[queueIndex]
@@ -753,7 +891,7 @@ function AdvanceQueue(rows)
 				end
 			end
 			if not row then
-				if (entry.movedSettleWaits or 0) < 1 then
+				if (entry.movedSettleWaits or 0) < MOVED_SETTLE_MAX_WAITS then
 					entry.movedSettleWaits = (entry.movedSettleWaits or 0) + 1
 					runtimeState = "collecting"
 					runtimeNote = "Waiting inbox settle"
@@ -826,6 +964,7 @@ function AdvanceQueue(rows)
 					identityFingerprint = BuildIdentityFingerprint(row),
 					identityMatchCount = CountIdentityMatches(rows, BuildIdentityFingerprint(row)),
 					sourceFingerprint = BuildFingerprint(row),
+					sourceFingerprintMatchCount = CountFingerprintMatches(rows, BuildFingerprint(row)),
 				}
 				TryIssuePendingAction(pendingAction)
 				return
@@ -840,6 +979,7 @@ function AdvanceQueue(rows)
 					identityFingerprint = BuildIdentityFingerprint(row),
 					identityMatchCount = CountIdentityMatches(rows, BuildIdentityFingerprint(row)),
 					sourceFingerprint = BuildFingerprint(row),
+					sourceFingerprintMatchCount = CountFingerprintMatches(rows, BuildFingerprint(row)),
 				}
 				TryIssuePendingAction(pendingAction)
 				return
@@ -920,10 +1060,16 @@ function GM.Collector.Prepare(rows)
 	return preparedSummary
 end
 
-function GM.Collector.Start(rows)
+function GM.Collector.Start(rows, runSource)
+	local source = tostring(runSource or "unknown")
+	if source ~= "collectAll" and source ~= "single" then
+		source = "unknown"
+	end
+
 	if runtimeState ~= "prepared" and runtimeState ~= "completed" and runtimeState ~= "idle" then
 		return false
 	end
+	currentRunSource = source
 	if #preparedList == 0 then
 		runtimeState = "completed"
 		EmitFinalSummary("completed")
@@ -946,29 +1092,8 @@ function GM.Collector.OnInboxUpdate(rows)
 	DebugLog("wait-event", "MAIL_INBOX_UPDATE")
 	ClearWaitTimeout()
 	if pendingAction and IsActionApplied(rows or {}, pendingAction) then
-		DebugLog("validate", "pass " .. DescribeAction(pendingAction))
-		local currentEntry = preparedList[queueIndex]
-		if currentEntry then
-			currentEntry.outcome = "success"
-			currentEntry.skipReason = nil
-		end
-		sessionResult.processedStepCount = sessionResult.processedStepCount + 1
-		if pendingAction.kind == "money" then
-			sessionResult.collectedMoney = sessionResult.collectedMoney + (pendingAction.value or 0)
-			sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
-		elseif pendingAction.kind == "itemMoney" then
-			sessionResult.collectedMoney = sessionResult.collectedMoney + (pendingAction.money or 0)
-			sessionResult.collectedItemCount = sessionResult.collectedItemCount + 1
-			sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
-		elseif pendingAction.kind == "item" then
-			sessionResult.collectedItemCount = sessionResult.collectedItemCount + 1
-			sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
-		end
-		local feedback = BuildCollectFeedback(pendingAction)
-		if feedback and feedback ~= "" then
-			PrintSuccess(feedback)
-		end
-		runtimeNote = nil
+		CompletePendingActionSuccess(rows or {}, "pass")
+		return
 	elseif pendingAction then
 		DebugLog("validate", "fail " .. DescribeAction(pendingAction))
 		if IsCommandPending() then
@@ -978,12 +1103,19 @@ function GM.Collector.OnInboxUpdate(rows)
 			return
 		end
 
-		if (pendingAction.verifyWaits or 0) < 2 then
+		if (pendingAction.verifyWaits or 0) < UNVERIFIED_VERIFY_MAX_WAITS then
 			pendingAction.verifyWaits = (pendingAction.verifyWaits or 0) + 1
 			runtimeNote = "Waiting inbox settle"
 			DebugLog("settle-wait", DescribeAction(pendingAction))
 			StartWaitTimeout()
 			ScheduleSettleValidation(pendingAction, ISSUE_DEFER_SECONDS, "unverified")
+			return
+		end
+
+		-- Final fresh probe before marking unverified; avoids false skip on late inbox settle.
+		local finalProbeRows = GetFreshRows()
+		if IsActionApplied(finalProbeRows or {}, pendingAction) then
+			CompletePendingActionSuccess(finalProbeRows or {}, "late-pass")
 			return
 		end
 
@@ -1008,6 +1140,7 @@ end
 function GM.Collector.StopWithError(message)
 	runtimeState = "error"
 	runtimeNote = message or "Collector stopped"
+	CancelInboxUpdateDebounce()
 	ClearWaitTimeout()
 	EmitFinalSummary("error", message or "Collector stopped")
 end
@@ -1038,6 +1171,9 @@ EmitFinalSummary = function(finalState, abortReason)
 		PrintError(summary)
 	end
 	DebugLog("summary", summary)
+	if snapshot.runSource == "collectAll" and GM.DebugPanel and GM.DebugPanel.AppendDump then
+		GM.DebugPanel.AppendDump("Collect All", BuildCollectDebugPayload(snapshot, summary))
+	end
 end
 
 eventFrame:RegisterEvent("MAIL_INBOX_UPDATE")
@@ -1046,6 +1182,7 @@ eventFrame:RegisterEvent("MAIL_FAILED")
 eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
 eventFrame:SetScript("OnEvent", function(_, eventName, ...)
 	if eventName == "MAIL_CLOSED" then
+		CancelInboxUpdateDebounce()
 		if runtimeState == "collecting" or runtimeState == "waitingRefresh" then
 			CaptureCloseTelemetry("event_mail_closed")
 		end
@@ -1053,22 +1190,24 @@ eventFrame:SetScript("OnEvent", function(_, eventName, ...)
 	end
 
 	if eventName == "MAIL_INBOX_UPDATE" and (runtimeState == "waitingRefresh") then
-		local rows = {}
-		DebugLog("refresh", "snapshot begin")
-		rows = GetFreshRows()
-		DebugLog("refresh", "snapshot rows=" .. tostring(#rows))
-		GM.Collector.OnInboxUpdate(rows)
+		ScheduleDebouncedInboxUpdate("event-mail-inbox-update", INBOX_UPDATE_BUCKET_SECONDS)
 		return
 	end
 
 	if eventName == "MAIL_FAILED" and runtimeState == "waitingRefresh" and pendingAction then
 		ClearWaitTimeout()
-		if (pendingAction.failedSettleWaits or 0) < 1 then
+		if (pendingAction.failedSettleWaits or 0) < MAIL_FAILED_SETTLE_MAX_WAITS then
 			pendingAction.failedSettleWaits = (pendingAction.failedSettleWaits or 0) + 1
 			runtimeNote = "Waiting inbox settle"
 			DebugLog("soft-recovery", "failed-settle " .. DescribeAction(pendingAction))
 			StartWaitTimeout()
-			ScheduleSettleValidation(pendingAction, ISSUE_DEFER_SECONDS, "mail-failed")
+			local delay = math.min(0.45, ISSUE_DEFER_SECONDS * pendingAction.failedSettleWaits)
+			ScheduleSettleValidation(pendingAction, delay, "mail-failed")
+			return
+		end
+		local finalProbeRows = GetFreshRows()
+		if IsActionApplied(finalProbeRows or {}, pendingAction) then
+			CompletePendingActionSuccess(finalProbeRows or {}, "failed-late-pass")
 			return
 		end
 
@@ -1088,12 +1227,18 @@ eventFrame:SetScript("OnEvent", function(_, eventName, ...)
 
 		if IsTransientMailUiError(uiMessage) then
 			ClearWaitTimeout()
-			if (pendingAction.transientSettleWaits or 0) < 2 then
+			if (pendingAction.transientSettleWaits or 0) < UI_TRANSIENT_SETTLE_MAX_WAITS then
 				pendingAction.transientSettleWaits = (pendingAction.transientSettleWaits or 0) + 1
 				runtimeNote = "Waiting inbox settle"
 				DebugLog("soft-recovery", "ui-transient " .. DescribeAction(pendingAction))
 				StartWaitTimeout()
-				ScheduleSettleValidation(pendingAction, TRANSIENT_SETTLE_DEFER_SECONDS, "ui-transient")
+				local delay = math.min(0.90, TRANSIENT_SETTLE_DEFER_SECONDS * pendingAction.transientSettleWaits)
+				ScheduleSettleValidation(pendingAction, delay, "ui-transient")
+				return
+			end
+			local finalProbeRows = GetFreshRows()
+			if IsActionApplied(finalProbeRows or {}, pendingAction) then
+				CompletePendingActionSuccess(finalProbeRows or {}, "ui-transient-late-pass")
 				return
 			end
 

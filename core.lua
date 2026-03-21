@@ -5,6 +5,7 @@ GM = GM or {}
 local eventFrame = CreateFrame("Frame")
 local mailFrameHooked = false
 local telemetrySlashRegistered = false
+local debugPanelSlashRegistered = false
 local pendingOnHideCloseTimer = nil
 local lastCloseHandledAt = 0
 
@@ -96,6 +97,23 @@ local function RegisterTelemetrySlash()
 	telemetrySlashRegistered = true
 end
 
+local function RegisterDebugPanelSlash()
+	if debugPanelSlashRegistered then
+		return
+	end
+	SLASH_GORILMAILDEBUG1 = "/gmdebug"
+	SlashCmdList.GORILMAILDEBUG = function()
+		if GM and GM.DebugPanel and GM.DebugPanel.Toggle then
+			GM.DebugPanel.Toggle()
+			return
+		end
+		if GM and GM.Utils and GM.Utils.PrintError then
+			GM.Utils.PrintError("Debug panel unavailable")
+		end
+	end
+	debugPanelSlashRegistered = true
+end
+
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("MAIL_SHOW")
 eventFrame:RegisterEvent("MAIL_CLOSED")
@@ -104,6 +122,10 @@ eventFrame:SetScript("OnEvent", function(_, eventName)
 	if eventName == "PLAYER_LOGIN" then
 		EnsureMailFrameHook()
 		RegisterTelemetrySlash()
+		RegisterDebugPanelSlash()
+		if GM.DebugPanel and GM.DebugPanel.Initialize then
+			GM.DebugPanel.Initialize()
+		end
 		if GM.Mailbox and GM.Mailbox.Initialize then
 			GM.Mailbox.Initialize()
 		end

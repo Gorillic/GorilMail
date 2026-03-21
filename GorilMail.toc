@@ -8,5 +8,6 @@
 core.lua
 mailbox.lua
 collector.lua
+debug.lua
 ui.lua
 utils.lua
