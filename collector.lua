@@ -287,26 +287,40 @@ end
 local function ParseItemContextFromSubject(subject)
 	local text = tostring(subject or "")
 	if text == "" then
-		return nil, nil
+		return nil
 	end
 
 	local core = text:match(":%s*(.+)$") or text
 	core = core:gsub("^%s+", ""):gsub("%s+$", "")
 	if core == "" then
-		return nil, nil
-	end
-
-	local count = tonumber(core:match("%((%d+)%)%s*$"))
-	if count and count > 0 then
-		core = core:gsub("%s*%(%d+%)%s*$", "")
-		core = core:gsub("^%s+", ""):gsub("%s+$", "")
+		return nil
 	end
 
 	if core == "" then
 		core = nil
 	end
 
-	return core, count
+	return core
+end
+
+local function GetInboxAttachmentNameAndCount(mailIndex)
+	if not GetInboxItem or not mailIndex then
+		return nil, 1
+	end
+	local itemName, itemID, itemTexture, itemCount = GetInboxItem(mailIndex, 1)
+	local count = tonumber(itemCount)
+	if not count or count <= 0 then
+		count = 1
+	end
+	return itemName, count
+end
+
+local function NormalizeFeedbackQuantity(value)
+	local count = tonumber(value)
+	if not count or count <= 0 then
+		return 1
+	end
+	return math.floor(count)
 end
 
 local function BuildCollectFeedback(action)
@@ -319,35 +333,25 @@ local function BuildCollectFeedback(action)
 	local moneyHex = "F0C35A"
 	local moneyText = Colorize(moneyHex, FormatMoneyText(action.money or action.value))
 	local itemName = tostring(action.itemName or "")
-	local itemCount = tonumber(action.itemCount)
-	local subjectName, subjectCount = ParseItemContextFromSubject(action.subject)
+	local itemCount = NormalizeFeedbackQuantity(action.itemCount)
+	local subjectName = ParseItemContextFromSubject(action.subject)
 
 	if itemName == "" and subjectName and subjectName ~= "" then
 		itemName = subjectName
 	end
-	if (not itemCount or itemCount < 1) and subjectCount and subjectCount > 0 then
-		itemCount = subjectCount
-	end
 
 	if action.kind == "money" then
 		if itemName ~= "" then
-			local countText = tostring((itemCount and itemCount > 0) and itemCount or 1)
+			local countText = tostring(itemCount)
 			return Colorize(itemHex, itemName) .. " " .. Colorize(countHex, "x" .. countText) .. " = " .. moneyText
-		end
-		if itemCount and itemCount > 0 then
-			return Colorize(itemHex, "Item") .. " " .. Colorize(countHex, "x" .. tostring(itemCount)) .. " = " .. moneyText
 		end
 		return "Gold collected = " .. moneyText
 	end
 
-	local count = tonumber(itemCount) or 1
-	if count < 1 then
-		count = 1
-	end
 	if itemName == "" then
 		itemName = "Item"
 	end
-	return Colorize(itemHex, itemName) .. " " .. Colorize(countHex, "x" .. tostring(count)) .. " = " .. moneyText
+	return Colorize(itemHex, itemName) .. " " .. Colorize(countHex, "x" .. tostring(itemCount)) .. " = " .. moneyText
 end
 
 local function BuildFingerprintCounts(rows)
@@ -562,6 +566,21 @@ local function CountIdentityMatches(rows, identityFingerprint)
 	return count
 end
 
+local function CountRemainingPreparedIdentityFrom(startIndex, identityFingerprint)
+	if not identityFingerprint or identityFingerprint == "" then
+		return 0
+	end
+	local fromIndex = tonumber(startIndex) or 1
+	local count = 0
+	for i = fromIndex, #preparedList do
+		local entry = preparedList[i]
+		if entry and entry.identityFingerprint == identityFingerprint and (entry.outcome == nil or entry.outcome == "pending") then
+			count = count + 1
+		end
+	end
+	return count
+end
+
 local function CountFingerprintMatches(rows, fingerprint)
 	if type(rows) ~= "table" or not fingerprint or fingerprint == "" then
 		return 0
@@ -693,6 +712,8 @@ local function TryIssuePendingAction(action)
 	return true
 end
 
+local IsActionIdentityGroupDeltaApplied
+
 local function FindPendingRow(rows, action)
 	if type(rows) ~= "table" or not action then
 		return nil, "missing"
@@ -712,6 +733,9 @@ local function FindPendingRow(rows, action)
 	end
 
 	if #candidates == 0 then
+		if IsActionIdentityGroupDeltaApplied(rows, action) then
+			return nil, "countDeltaApplied"
+		end
 		local previousSourceCount = tonumber(action.sourceFingerprintMatchCount) or 0
 		if previousSourceCount > 0 then
 			local currentSourceCount = CountFingerprintMatches(rows, action.sourceFingerprint)
@@ -745,6 +769,9 @@ local function FindPendingRow(rows, action)
 		if currentSourceCount < previousSourceCount then
 			return nil, "countDeltaApplied"
 		end
+	end
+	if IsActionIdentityGroupDeltaApplied(rows, action) then
+		return nil, "countDeltaApplied"
 	end
 	if previousCount > 1 then
 		if #candidates < previousCount then
@@ -784,6 +811,79 @@ local function FindPendingRow(rows, action)
 	return nil, "ambiguous"
 end
 
+local function IsSameIdentityGroupAction(action)
+	local identityCount = tonumber(action and action.identityMatchCount) or 0
+	local groupCount = tonumber(action and action.identityGroupMatchCount) or 0
+	local preparedCount = tonumber(action and action.identityPreparedCount) or 0
+	return preparedCount > 1 or identityCount > 1 or groupCount > 1
+end
+
+local function IsPreparedIdentityCountDeltaApplied(rows, action, startIndex)
+	if type(rows) ~= "table" or not action then
+		return false, 0, 0
+	end
+	local preparedCount = tonumber(action.identityPreparedCount) or 0
+	if preparedCount <= 1 then
+		return false, 0, 0
+	end
+	local identityFingerprint = action.identityFingerprint
+	if not identityFingerprint or identityFingerprint == "" then
+		return false, 0, 0
+	end
+	local fromIndex = tonumber(startIndex) or queueIndex
+	local remainingIdentitySteps = CountRemainingPreparedIdentityFrom(fromIndex, identityFingerprint)
+	local currentIdentityCount = CountIdentityMatches(rows, identityFingerprint)
+	return currentIdentityCount < remainingIdentitySteps, currentIdentityCount, remainingIdentitySteps
+end
+
+local function RowMatchesActionIdentityGroup(row, action)
+	if not row or not action then
+		return false
+	end
+	if BuildIdentityFingerprint(row) ~= action.identityFingerprint then
+		return false
+	end
+	if action.groupHasItem ~= nil then
+		local rowHasItem = row.hasItem and true or false
+		if rowHasItem ~= (action.groupHasItem and true or false) then
+			return false
+		end
+	end
+	local moneyBucket = tostring(action.groupMoneyBucket or "")
+	if moneyBucket == "gt0" then
+		return (row.money or 0) > 0
+	end
+	if moneyBucket == "le0" then
+		return (row.money or 0) <= 0
+	end
+	return true
+end
+
+local function CountActionIdentityGroupMatches(rows, action)
+	if type(rows) ~= "table" or not action then
+		return 0
+	end
+	if not action.identityFingerprint or action.identityFingerprint == "" then
+		return 0
+	end
+	local count = 0
+	for i = 1, #rows do
+		if RowMatchesActionIdentityGroup(rows[i], action) then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+IsActionIdentityGroupDeltaApplied = function(rows, action)
+	local previousGroupCount = tonumber(action and action.identityGroupMatchCount) or 0
+	if previousGroupCount <= 1 then
+		return false
+	end
+	local currentGroupCount = CountActionIdentityGroupMatches(rows, action)
+	return currentGroupCount < previousGroupCount
+end
+
 local function IsActionApplied(rows, action)
 	if not action then
 		return false
@@ -812,6 +912,26 @@ local function IsActionApplied(rows, action)
 		return (not row.hasItem) and ((row.money or 0) <= 0)
 	end
 
+	return false
+end
+
+local function IsActionAppliedStrong(rows, action)
+	if not action then
+		return false
+	end
+	local row, rowState = FindPendingRow(rows, action)
+	if not row then
+		return rowState == "countDeltaApplied"
+	end
+	if action.kind == "money" then
+		return (row.money or 0) <= 0
+	end
+	if action.kind == "item" then
+		return not row.hasItem
+	end
+	if action.kind == "itemMoney" then
+		return (not row.hasItem) and ((row.money or 0) <= 0)
+	end
 	return false
 end
 
@@ -891,6 +1011,45 @@ function AdvanceQueue(rows)
 				end
 			end
 			if not row then
+				if entry.identityFingerprint and entry.identityFingerprint ~= ""
+					and (entry.identityPreparedCount or 0) > 1
+					and (not entry.groupMovedProbeUsed) then
+					local freshRows = GetFreshRows()
+					local freshIdentityCount = CountIdentityMatches(freshRows, entry.identityFingerprint)
+					local remainingIdentitySteps = CountRemainingPreparedIdentityFrom(queueIndex, entry.identityFingerprint)
+					if freshIdentityCount < remainingIdentitySteps then
+						entry.groupMovedProbeUsed = true
+						runtimeState = "collecting"
+						runtimeNote = "Waiting inbox settle"
+						local expectedQueueIndex = queueIndex
+						local expectedEntry = entry
+						DebugLog(
+							"settle-wait",
+							"moved-group idx="
+								.. tostring(entry.index or "?")
+								.. " left=" .. tostring(remainingIdentitySteps)
+								.. " rows=" .. tostring(freshIdentityCount)
+						)
+						C_Timer.After(ISSUE_DEFER_SECONDS, function()
+							if runtimeState ~= "collecting" then
+								return
+							end
+							if queueIndex ~= expectedQueueIndex then
+								return
+							end
+							local currentEntry = preparedList[queueIndex]
+							if currentEntry ~= expectedEntry then
+								return
+							end
+							if not currentEntry.groupMovedProbeUsed then
+								return
+							end
+							DebugLog("refresh", "moved-group-settle idx=" .. tostring(currentEntry.index or "?"))
+							AdvanceQueue(GetFreshRows())
+						end)
+						return
+					end
+				end
 				if (entry.movedSettleWaits or 0) < MOVED_SETTLE_MAX_WAITS then
 					entry.movedSettleWaits = (entry.movedSettleWaits or 0) + 1
 					runtimeState = "collecting"
@@ -923,6 +1082,7 @@ function AdvanceQueue(rows)
 				entry.outcome = "skipped"
 				entry.skipReason = "moved"
 				entry.movedSettleWaits = nil
+				entry.groupMovedProbeUsed = nil
 				runtimeNote = "Skipped moved mail"
 				DebugLog("skip", "moved idx=" .. tostring(entry.index or "?"))
 				queueIndex = queueIndex + 1
@@ -930,6 +1090,7 @@ function AdvanceQueue(rows)
 		end
 		if row then
 			entry.movedSettleWaits = nil
+			entry.groupMovedProbeUsed = nil
 		end
 
 		if not row then
@@ -949,10 +1110,7 @@ function AdvanceQueue(rows)
 		else
 			runtimeState = "collecting"
 			if row.hasItem then
-				local itemName, _, itemCount = nil, nil, nil
-				if GetInboxItem then
-					itemName, _, itemCount = GetInboxItem(row.index, 1)
-				end
+				local itemName, itemCount = GetInboxAttachmentNameAndCount(row.index)
 				pendingAction = {
 					kind = (row.money and row.money > 0) and "itemMoney" or "item",
 					value = row.subject or "-",
@@ -963,9 +1121,13 @@ function AdvanceQueue(rows)
 					index = row.index,
 					identityFingerprint = BuildIdentityFingerprint(row),
 					identityMatchCount = CountIdentityMatches(rows, BuildIdentityFingerprint(row)),
+					identityPreparedCount = entry.identityPreparedCount or 0,
 					sourceFingerprint = BuildFingerprint(row),
 					sourceFingerprintMatchCount = CountFingerprintMatches(rows, BuildFingerprint(row)),
+					groupHasItem = row.hasItem and true or false,
+					groupMoneyBucket = ((row.money or 0) > 0) and "gt0" or "le0",
 				}
+				pendingAction.identityGroupMatchCount = CountActionIdentityGroupMatches(rows, pendingAction)
 				TryIssuePendingAction(pendingAction)
 				return
 			end
@@ -978,9 +1140,13 @@ function AdvanceQueue(rows)
 					index = row.index,
 					identityFingerprint = BuildIdentityFingerprint(row),
 					identityMatchCount = CountIdentityMatches(rows, BuildIdentityFingerprint(row)),
+					identityPreparedCount = entry.identityPreparedCount or 0,
 					sourceFingerprint = BuildFingerprint(row),
 					sourceFingerprintMatchCount = CountFingerprintMatches(rows, BuildFingerprint(row)),
+					groupHasItem = row.hasItem and true or false,
+					groupMoneyBucket = ((row.money or 0) > 0) and "gt0" or "le0",
 				}
+				pendingAction.identityGroupMatchCount = CountActionIdentityGroupMatches(rows, pendingAction)
 				TryIssuePendingAction(pendingAction)
 				return
 			end
@@ -1051,6 +1217,17 @@ function GM.Collector.Prepare(rows)
 			end
 		end
 	end
+	local identityPreparedCounts = {}
+	for i = 1, #preparedList do
+		local entry = preparedList[i]
+		local key = tostring(entry and entry.identityFingerprint or "")
+		identityPreparedCounts[key] = (identityPreparedCounts[key] or 0) + 1
+	end
+	for i = 1, #preparedList do
+		local entry = preparedList[i]
+		local key = tostring(entry and entry.identityFingerprint or "")
+		entry.identityPreparedCount = identityPreparedCounts[key] or 0
+	end
 
 	runtimeState = "prepared"
 	runtimeNote = nil
@@ -1096,6 +1273,33 @@ function GM.Collector.OnInboxUpdate(rows)
 		return
 	elseif pendingAction then
 		DebugLog("validate", "fail " .. DescribeAction(pendingAction))
+		if (not pendingAction.groupUnverifiedProbeUsed) and IsSameIdentityGroupAction(pendingAction) then
+			pendingAction.groupUnverifiedProbeUsed = true
+			local groupProbeRows = GetFreshRows()
+			local groupDeltaApplied, groupIdentityCount, groupRemainingSteps = IsPreparedIdentityCountDeltaApplied(
+				groupProbeRows or {},
+				pendingAction,
+				queueIndex
+			)
+			if groupDeltaApplied or IsActionAppliedStrong(groupProbeRows or {}, pendingAction) then
+				CompletePendingActionSuccess(groupProbeRows or {}, "group-pass")
+				return
+			end
+			DebugLog("validate", "group-miss " .. DescribeAction(pendingAction))
+			if not IsCommandPending() then
+				runtimeNote = "Waiting inbox settle"
+				DebugLog(
+					"settle-wait",
+					"unverified-group "
+						.. DescribeAction(pendingAction)
+						.. " left=" .. tostring(groupRemainingSteps)
+						.. " rows=" .. tostring(groupIdentityCount)
+				)
+				StartWaitTimeout()
+				ScheduleSettleValidation(pendingAction, ISSUE_DEFER_SECONDS, "unverified-group")
+				return
+			end
+		end
 		if IsCommandPending() then
 			runtimeNote = "Waiting command completion"
 			DebugLog("wait", "command-completion " .. DescribeAction(pendingAction))
@@ -1116,6 +1320,14 @@ function GM.Collector.OnInboxUpdate(rows)
 		local finalProbeRows = GetFreshRows()
 		if IsActionApplied(finalProbeRows or {}, pendingAction) then
 			CompletePendingActionSuccess(finalProbeRows or {}, "late-pass")
+			return
+		end
+		local finalGroupDeltaApplied = false
+		if IsSameIdentityGroupAction(pendingAction) then
+			finalGroupDeltaApplied = (IsPreparedIdentityCountDeltaApplied(finalProbeRows or {}, pendingAction, queueIndex))
+		end
+		if finalGroupDeltaApplied then
+			CompletePendingActionSuccess(finalProbeRows or {}, "late-group-pass")
 			return
 		end
 
