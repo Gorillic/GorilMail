@@ -9,26 +9,41 @@ local debugPanelSlashRegistered = false
 local pendingOnHideCloseTimer = nil
 local lastCloseHandledAt = 0
 
+local function IsAddonMailUIStaleVisible()
+	if not GM.UI or GM.UI.showingDefaultUI then
+		return false
+	end
+	local frame = GM.UI.frame
+	if not frame or not frame.IsShown then
+		return false
+	end
+	return frame:IsShown()
+end
+
 local function HandleMailClosed(source)
 	local now = GetTime and GetTime() or 0
 	if (now - (lastCloseHandledAt or 0)) < 0.2 then
 		return
 	end
-	lastCloseHandledAt = now
 
 	local mailboxWasOpen = true
 	if GM.Mailbox and GM.Mailbox.IsOpen then
 		mailboxWasOpen = GM.Mailbox.IsOpen()
 	end
-	if GM.Collector and GM.Collector.RecordCloseTelemetry then
-		GM.Collector.RecordCloseTelemetry(source or "core_handle_mail_closed")
-	end
-	if not mailboxWasOpen then
+	local forceUICleanup = IsAddonMailUIStaleVisible()
+	if not mailboxWasOpen and not forceUICleanup then
 		return
 	end
 
+	lastCloseHandledAt = now
+	if GM.Collector and GM.Collector.RecordCloseTelemetry then
+		GM.Collector.RecordCloseTelemetry(source or "core_handle_mail_closed")
+	end
+
 	if GM.Mailbox and GM.Mailbox.OnMailClosed then
-		GM.Mailbox.OnMailClosed()
+		if mailboxWasOpen then
+			GM.Mailbox.OnMailClosed()
+		end
 	end
 	if GM.UI and GM.UI.OnMailClosed then
 		GM.UI.OnMailClosed()

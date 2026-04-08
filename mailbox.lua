@@ -20,15 +20,19 @@ local function NormalizeRow(index)
 	local codValue = codAmount or 0
 	local hasItemValue = hasItem and true or false
 	local canCollect = false
+	local canDelete = false
 	local blockedReason = nil
 
 	if codValue > 0 then
 		canCollect = false
+		canDelete = false
 		blockedReason = "COD"
 	elseif moneyValue > 0 or hasItemValue then
 		canCollect = true
+		canDelete = false
 	else
 		canCollect = false
+		canDelete = true
 		blockedReason = "Empty"
 	end
 
@@ -41,6 +45,7 @@ local function NormalizeRow(index)
 		hasItem = hasItemValue,
 		wasRead = wasRead and true or false,
 		canCollect = canCollect,
+		canDelete = canDelete,
 		blockedReason = blockedReason,
 	}
 end
