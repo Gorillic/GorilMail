@@ -10,4 +10,7 @@ mailbox.lua
 collector.lua
 debug.lua
 ui.lua
+destroy_scan.lua
+destroy_ui.lua
+destroy.lua
 utils.lua

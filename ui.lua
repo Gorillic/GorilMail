@@ -1041,6 +1041,7 @@ ApplyThemeToUI = function()
 	for _, pair in ipairs({
 		{ GM.UI.returnButton, "accent" },
 		{ GM.UI.defaultUIButton, "secondary" },
+		{ GM.UI.destroyUIButton, "secondary" },
 		{ GM.UI.refreshButton, "secondary" },
 		{ GM.UI.collectAllButton, "primary" },
 		{ GM.UI.sendFillSimilarButton, "secondary" },
@@ -4556,11 +4557,27 @@ local function BuildToolbarButtons(toolbar, frame)
 	StyleGeneralButton(defaultUIButton, "secondary")
 	GM.UI.defaultUIButton = defaultUIButton
 
-	-- Final toolbar ordering: A, H, Inbox, Send, WoW UI, X
+	local destroyUIButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
+	destroyUIButton:SetSize(68, 20)
+	destroyUIButton:SetPoint("RIGHT", defaultUIButton, "LEFT", -4, 0)
+	destroyUIButton:SetText("Destroy")
+	destroyUIButton:SetScript("OnClick", function()
+		if GM.Destroy and GM.Destroy.Toggle then
+			GM.Destroy.Toggle()
+			return
+		end
+		SetStatusText("Destroy UI unavailable")
+	end)
+	StyleGeneralButton(destroyUIButton, "secondary")
+	GM.UI.destroyUIButton = destroyUIButton
+
+	-- Final toolbar ordering: A, H, Inbox, Send, Destroy, WoW UI, X
 	defaultUIButton:ClearAllPoints()
 	defaultUIButton:SetPoint("RIGHT", closeButton, "LEFT", -10, 0)
+	destroyUIButton:ClearAllPoints()
+	destroyUIButton:SetPoint("RIGHT", defaultUIButton, "LEFT", -4, 0)
 	modeSendButton:ClearAllPoints()
-	modeSendButton:SetPoint("RIGHT", defaultUIButton, "LEFT", -4, 0)
+	modeSendButton:SetPoint("RIGHT", destroyUIButton, "LEFT", -4, 0)
 	modeInboxButton:ClearAllPoints()
 	modeInboxButton:SetPoint("RIGHT", modeSendButton, "LEFT", -2, 0)
 	themeHordeButton:ClearAllPoints()

@@ -141,6 +141,9 @@ eventFrame:SetScript("OnEvent", function(_, eventName)
 		if GM.DebugPanel and GM.DebugPanel.Initialize then
 			GM.DebugPanel.Initialize()
 		end
+		if GM.Destroy and GM.Destroy.Initialize then
+			GM.Destroy.Initialize()
+		end
 		if GM.Mailbox and GM.Mailbox.Initialize then
 			GM.Mailbox.Initialize()
 		end
