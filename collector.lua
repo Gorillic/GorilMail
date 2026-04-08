@@ -26,13 +26,11 @@ local sessionResult = {
 	failedStepCount = 0,
 	abortReason = nil,
 	finalState = "idle",
-	closeTelemetry = nil,
 }
 local queueIndex = 1
 local pendingAction = nil
 local eventFrame = CreateFrame("Frame")
 local runtimeNote = nil
-local currentRunSource = nil
 local waitTimer = nil
 local inboxUpdateDebounceTimer = nil
 local WAIT_TIMEOUT_SECONDS = 2.5
@@ -175,39 +173,11 @@ local function ResetPreparedData()
 	sessionResult.failedStepCount = 0
 	sessionResult.abortReason = nil
 	sessionResult.finalState = "idle"
-	sessionResult.closeTelemetry = nil
 	queueIndex = 1
 	pendingAction = nil
 	runtimeNote = nil
-	currentRunSource = nil
 	finalSummaryEmitted = false
 	CancelInboxUpdateDebounce()
-end
-
-local function IsCollectActive()
-	return runtimeState == "collecting" or runtimeState == "waitingRefresh"
-end
-
-local function CaptureCloseTelemetry(source)
-	local mailboxOpen = nil
-	if GM.Mailbox and GM.Mailbox.IsOpen then
-		mailboxOpen = GM.Mailbox.IsOpen() and true or false
-	end
-	local mailFrameShown = nil
-	if MailFrame and MailFrame.IsShown then
-		mailFrameShown = MailFrame:IsShown() and true or false
-	end
-	sessionResult.closeTelemetry = {
-		source = tostring(source or "unknown"),
-		mailboxOpen = mailboxOpen,
-		mailFrameShown = mailFrameShown,
-		collectActive = IsCollectActive(),
-	}
-	DebugLog("close", "source=" .. tostring(sessionResult.closeTelemetry.source))
-end
-
-function GM.Collector.RecordCloseTelemetry(source)
-	CaptureCloseTelemetry(source)
 end
 
 local function PrintInfo(message)
@@ -243,18 +213,6 @@ DebugLog = function(eventName, detail)
 		parts[#parts + 1] = tostring(detail)
 	end
 	PrintInfo(table.concat(parts, " "))
-end
-
-function GM.Collector.SetDebugEnabled(enabled)
-	debugEnabled = enabled and true or false
-end
-
-function GM.Collector.IsDebugEnabled()
-	return debugEnabled
-end
-
-function GM.Collector.DebugLog(eventName, detail)
-	DebugLog(eventName, detail)
 end
 
 DescribeAction = function(action)
@@ -445,24 +403,6 @@ local function BuildFinalOutcomes(finalState, rows)
 	return outcomes, successCount, skippedCount, failedCount
 end
 
-local function BuildSkipReasonTelemetry()
-	local counts = {}
-	local lastReason = nil
-	for i = 1, #preparedList do
-		local entry = preparedList[i]
-		local effectiveOutcome = entry and (entry.finalOutcome or entry.outcome) or nil
-		if entry and (effectiveOutcome == "skipped" or effectiveOutcome == "failed") then
-			local reason = entry.skipReason
-			if reason and reason ~= "" then
-				local key = tostring(reason)
-				counts[key] = (counts[key] or 0) + 1
-				lastReason = key
-			end
-		end
-	end
-	return counts, lastReason
-end
-
 local function BuildSessionSnapshot(finalState, abortReason)
 	local preparedCount = #preparedList
 	local processedCount = tonumber(sessionResult.processedStepCount) or 0
@@ -481,9 +421,7 @@ local function BuildSessionSnapshot(finalState, abortReason)
 	end
 	local _, finalSuccessCount, finalSkippedCount, finalFailedCount = BuildFinalOutcomes(sessionResult.finalState, GetFreshRows())
 	local completedCount = finalSuccessCount + finalSkippedCount + finalFailedCount
-	local skipReasonCounts, lastSkipReason = BuildSkipReasonTelemetry()
 	return {
-		runSource = currentRunSource or "unknown",
 		preparedCount = preparedCount,
 		processedStepCount = processedCount,
 		completedCount = completedCount,
@@ -493,45 +431,10 @@ local function BuildSessionSnapshot(finalState, abortReason)
 		collectedMailCount = sessionResult.collectedMailCount or 0,
 		skippedCount = sessionResult.skippedCount or 0,
 		preblockedCount = sessionResult.preblockedCount or 0,
-		skipReasonCounts = skipReasonCounts,
-		lastSkipReason = lastSkipReason,
 		softRecoveryCount = sessionResult.softRecoveryCount or 0,
 		failedStepCount = sessionResult.failedStepCount or 0,
 		abortReason = sessionResult.abortReason,
 		finalState = sessionResult.finalState,
-		closeTelemetry = sessionResult.closeTelemetry,
-	}
-end
-
-local function BuildCollectDebugPayload(snapshot, summaryText)
-	local entries = {}
-	for i = 1, #preparedList do
-		local entry = preparedList[i]
-		entries[#entries + 1] = {
-			order = i,
-			index = entry and entry.index or nil,
-			outcome = entry and (entry.finalOutcome or entry.outcome) or nil,
-			skipReason = entry and entry.skipReason or nil,
-			identity = entry and entry.identityFingerprint or nil,
-			fingerprint = entry and entry.fingerprint or nil,
-		}
-	end
-
-	return {
-		summary = summaryText,
-		runSource = snapshot and snapshot.runSource or "unknown",
-		runtimeState = runtimeState,
-		runtimeNote = runtimeNote,
-		queueIndex = queueIndex,
-		pendingAction = DescribeAction(pendingAction),
-		preparedSummary = {
-			collectableCount = preparedSummary.collectableCount or 0,
-			blockedCount = preparedSummary.blockedCount or 0,
-			codCount = preparedSummary.codCount or 0,
-			emptyCount = preparedSummary.emptyCount or 0,
-		},
-		snapshot = snapshot,
-		entries = entries,
 	}
 end
 
@@ -1169,20 +1072,8 @@ function GM.Collector.GetPreparedList()
 	return preparedList
 end
 
-function GM.Collector.GetPreparedSummary()
-	return preparedSummary
-end
-
 function GM.Collector.GetStatusNote()
 	return runtimeNote
-end
-
-function GM.Collector.GetSessionResult()
-	return sessionResult
-end
-
-function GM.Collector.GetSessionSnapshot()
-	return BuildSessionSnapshot(runtimeState)
 end
 
 function GM.Collector.Prepare(rows)
@@ -1237,16 +1128,10 @@ function GM.Collector.Prepare(rows)
 	return preparedSummary
 end
 
-function GM.Collector.Start(rows, runSource)
-	local source = tostring(runSource or "unknown")
-	if source ~= "collectAll" and source ~= "single" then
-		source = "unknown"
-	end
-
+function GM.Collector.Start(rows)
 	if runtimeState ~= "prepared" and runtimeState ~= "completed" and runtimeState ~= "idle" then
 		return false
 	end
-	currentRunSource = source
 	if #preparedList == 0 then
 		runtimeState = "completed"
 		EmitFinalSummary("completed")
@@ -1383,9 +1268,6 @@ EmitFinalSummary = function(finalState, abortReason)
 		PrintError(summary)
 	end
 	DebugLog("summary", summary)
-	if snapshot.runSource == "collectAll" and GM.DebugPanel and GM.DebugPanel.AppendDump then
-		GM.DebugPanel.AppendDump("Collect All", BuildCollectDebugPayload(snapshot, summary))
-	end
 end
 
 eventFrame:RegisterEvent("MAIL_INBOX_UPDATE")
@@ -1395,9 +1277,6 @@ eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
 eventFrame:SetScript("OnEvent", function(_, eventName, ...)
 	if eventName == "MAIL_CLOSED" then
 		CancelInboxUpdateDebounce()
-		if runtimeState == "collecting" or runtimeState == "waitingRefresh" then
-			CaptureCloseTelemetry("event_mail_closed")
-		end
 		return
 	end
 

@@ -15,16 +15,6 @@ local function EmitMessage(color, message)
 	end
 end
 
-local function FormatMoney(copper)
-	if not copper or copper <= 0 then
-		return "0"
-	end
-	if GetCoinTextureString then
-		return GetCoinTextureString(copper)
-	end
-	return tostring(copper)
-end
-
 function GM.Utils.PrintInfo(message)
 	EmitMessage({ r = 0.75, g = 0.9, b = 1.0 }, message)
 end
@@ -39,8 +29,4 @@ end
 
 function GM.Utils.PrintError(message)
 	EmitMessage({ r = 1.0, g = 0.45, b = 0.45 }, message)
-end
-
-function GM.Utils.PrintMoney(label, copper)
-	EmitMessage({ r = 1.0, g = 0.82, b = 0.2 }, tostring(label or "Money") .. ": " .. FormatMoney(copper))
 end

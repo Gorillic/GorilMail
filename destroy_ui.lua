@@ -15,7 +15,9 @@ local state = {
 	summary = nil,
 	knownSpells = nil,
 	currentCandidate = nil,
-	skipped = {},
+	selectedRowKey = nil,
+	selectedIndex = 1,
+	skipAdvanceCount = 0,
 }
 
 local function GetSpellNameSafe(spellID)
@@ -50,9 +52,10 @@ local function UpdateSummaryText()
 		return
 	end
 	local summary = state.summary or {}
+	local skippedCount = tonumber(state.skipAdvanceCount) or 0
 	state.frame.summaryText:SetText(
 		"Ready: " .. tostring(tonumber(summary.ready) or 0)
-			.. " | Skipped: " .. tostring(tonumber(summary.skipped) or 0)
+			.. " | Skipped: " .. tostring(skippedCount)
 			.. " | Blocked: " .. tostring(tonumber(summary.blocked) or 0)
 	)
 end
@@ -92,11 +95,36 @@ local function ConfigureDestroyButton()
 	button:SetEnabled(true)
 end
 
+local function FindRowIndexByKey(rowKey)
+	if not rowKey then
+		return nil
+	end
+	for i = 1, #state.dataRows do
+		if state.dataRows[i] and state.dataRows[i].rowKey == rowKey then
+			return i
+		end
+	end
+	return nil
+end
+
 local function UpdateActionState()
 	if not state.frame then
 		return
 	end
-	state.currentCandidate = state.dataRows[1]
+	local selectedIndex = FindRowIndexByKey(state.selectedRowKey)
+	if not selectedIndex then
+		selectedIndex = tonumber(state.selectedIndex) or 1
+	end
+	local total = #state.dataRows
+	if total <= 0 then
+		selectedIndex = nil
+	elseif selectedIndex < 1 or selectedIndex > total then
+		selectedIndex = 1
+	end
+
+	state.selectedIndex = selectedIndex or 1
+	state.currentCandidate = (selectedIndex and state.dataRows[selectedIndex]) or nil
+	state.selectedRowKey = state.currentCandidate and state.currentCandidate.rowKey or nil
 	ConfigureDestroyButton()
 	if state.frame.nextText then
 		if state.currentCandidate then
@@ -108,7 +136,7 @@ local function UpdateActionState()
 		end
 	end
 	if state.frame.skipButton then
-		state.frame.skipButton:SetEnabled(state.currentCandidate ~= nil)
+		state.frame.skipButton:SetEnabled(state.currentCandidate ~= nil and #state.dataRows > 1)
 	end
 end
 
@@ -126,16 +154,18 @@ local function RenderVisibleRows()
 		local dataIndex = offset + visualIndex
 		local row = state.dataRows[dataIndex]
 		if row then
+			rowFrame.rowKey = row.rowKey
 			rowFrame.itemLink = row.itemLink
 			rowFrame.icon:SetTexture(GetItemIcon(row.itemID or 0))
 			rowFrame.name:SetText(tostring(row.itemName or "-"))
-			if dataIndex == 1 then
+			if row.rowKey and row.rowKey == state.selectedRowKey then
 				rowFrame.bg:SetColorTexture(0.13, 0.20, 0.10, 0.45)
 			else
 				rowFrame.bg:SetColorTexture(0.08, 0.08, 0.10, (visualIndex % 2 == 0) and 0.28 or 0.16)
 			end
 			rowFrame:Show()
 		else
+			rowFrame.rowKey = nil
 			rowFrame.itemLink = nil
 			rowFrame:Hide()
 		end
@@ -159,7 +189,7 @@ local function RefreshData()
 		return
 	end
 
-	local rows, summary, known = GM.DestroyScan.Scan({ skipped = state.skipped })
+	local rows, summary, known = GM.DestroyScan.Scan()
 	state.dataRows = rows or {}
 	state.summary = summary or { ready = 0, skipped = 0, blocked = 0 }
 	state.knownSpells = known or { knowsDisenchant = false, knowsMill = false }
@@ -202,6 +232,17 @@ local function BuildRow(parent, index)
 	row:SetScript("OnLeave", function()
 		if GameTooltip then
 			GameTooltip:Hide()
+		end
+	end)
+	row:SetScript("OnClick", function(self)
+		if not self.rowKey then
+			return
+		end
+		state.selectedRowKey = self.rowKey
+		UpdateActionState()
+		RenderVisibleRows()
+		if state.currentCandidate then
+			SetStatusText("Selected: " .. tostring(state.currentCandidate.itemName or "-"))
 		end
 	end)
 
@@ -324,9 +365,30 @@ local function CreateDestroyFrame()
 		if not state.currentCandidate or not state.currentCandidate.rowKey then
 			return
 		end
-		state.skipped[state.currentCandidate.rowKey] = true
-		SetStatusText("Skipped: " .. tostring(state.currentCandidate.itemName or "-"))
-		RefreshData()
+		local total = #state.dataRows
+		if total <= 1 then
+			SetStatusText("No next candidate")
+			return
+		end
+
+		local oldName = tostring(state.currentCandidate.itemName or "-")
+		local currentIndex = FindRowIndexByKey(state.currentCandidate.rowKey) or state.selectedIndex or 1
+		local nextIndex = currentIndex + 1
+		if nextIndex > total then
+			nextIndex = 1
+		end
+		local nextRow = state.dataRows[nextIndex]
+		state.skipAdvanceCount = (tonumber(state.skipAdvanceCount) or 0) + 1
+		state.selectedIndex = nextIndex
+		state.selectedRowKey = nextRow and nextRow.rowKey or nil
+		UpdateSummaryText()
+		UpdateActionState()
+		RenderVisibleRows()
+		if state.currentCandidate then
+			SetStatusText("Skipped: " .. oldName .. " -> Next: " .. tostring(state.currentCandidate.itemName or "-"))
+		else
+			SetStatusText("Skipped: " .. oldName)
+		end
 	end)
 	frame.skipButton = skipButton
 
@@ -347,6 +409,9 @@ local function CreateDestroyFrame()
 	frame.destroyNextButton = destroyNextButton
 
 	frame:SetScript("OnShow", function()
+		state.skipAdvanceCount = 0
+		state.selectedRowKey = nil
+		state.selectedIndex = 1
 		RefreshData()
 	end)
 

@@ -130,8 +130,7 @@ local function CompareRows(a, b)
 	return (a.slot or -1) < (b.slot or -1)
 end
 
-function GM.DestroyScan.Scan(options)
-	local skipped = type(options) == "table" and type(options.skipped) == "table" and options.skipped or nil
+function GM.DestroyScan.Scan()
 	local rows = {}
 	local summary = {
 		candidates = 0,
@@ -158,21 +157,17 @@ function GM.DestroyScan.Scan(options)
 					local hasQuantity = (slotInfo.count or 0) >= (minQuantity or 1)
 					if knowsSpell and hasQuantity then
 						local rowKey = BuildRowKey(bagID, slot, slotInfo.itemID)
-						if skipped and skipped[rowKey] then
-							summary.skipped = summary.skipped + 1
-						else
-							rows[#rows + 1] = {
-								rowKey = rowKey,
-								bagID = bagID,
-								slot = slot,
-								itemID = slotInfo.itemID,
-								itemLink = slotInfo.link,
-								itemName = itemName or ("item:" .. tostring(slotInfo.itemID)),
-								destroyType = destroyType,
-								spellID = spellID,
-							}
-							summary.ready = summary.ready + 1
-						end
+						rows[#rows + 1] = {
+							rowKey = rowKey,
+							bagID = bagID,
+							slot = slot,
+							itemID = slotInfo.itemID,
+							itemLink = slotInfo.link,
+							itemName = itemName or ("item:" .. tostring(slotInfo.itemID)),
+							destroyType = destroyType,
+							spellID = spellID,
+						}
+						summary.ready = summary.ready + 1
 					else
 						summary.blocked = summary.blocked + 1
 					end

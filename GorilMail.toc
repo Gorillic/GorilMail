@@ -1,14 +1,16 @@
 ## Interface: 120001
 ## Title: GorilMail
 ## Notes: Lightweight mailbox reader and safe collector
-## Author: Goril
-## Version: 0.1.0
+## Author: Goril Labs
+## Version: 0.1.1
+## Category: Bags & Inventory
+## Category-enUS: Bags & Inventory
+## IconTexture: Interface\Icons\INV_Letter_15
 ## SavedVariables: GorilMailUIPos
 
 core.lua
 mailbox.lua
 collector.lua
-debug.lua
 ui.lua
 destroy_scan.lua
 destroy_ui.lua

@@ -1506,9 +1506,8 @@ local function TryEnableMailRecipientAutoComplete(editBox)
 end
 
 local function AppendSendDebugDump(stage, payload)
-	if GM.DebugPanel and GM.DebugPanel.AppendDump then
-		GM.DebugPanel.AppendDump("Send " .. tostring(stage or "event"), payload or {})
-	end
+	-- Debug panel removed from runtime build; keep call sites as no-op.
+	return
 end
 
 local function GetSendAttachmentMaxSlots()
@@ -3168,7 +3167,7 @@ local function StartCollectForSingleMail(mailIndex)
 	SetDetailPanelOpen(false)
 	local summary = GM.Collector.Prepare({ selectedRow })
 	SetStatusText("Prepared C:" .. tostring(summary.collectableCount) .. " B:" .. tostring(summary.blockedCount))
-	GM.Collector.Start(rows, "single")
+	GM.Collector.Start(rows)
 	RenderInboxRows()
 end
 
@@ -4647,7 +4646,7 @@ local function BuildFooterActionButtons(footer)
 			SetStatusText("Prepared C:" .. tostring(summary.collectableCount) .. " B:" .. tostring(summary.blockedCount))
 		end
 
-		GM.Collector.Start(rows, "collectAll")
+		GM.Collector.Start(rows)
 		RenderInboxRows()
 	end)
 	StyleGeneralButton(collectButton, "primary")
@@ -5172,11 +5171,21 @@ function GM.UI.Initialize()
 	RenderInboxRows()
 
 	SLASH_GORILMAIL1 = "/gorilmail"
-	SlashCmdList.GORILMAIL = function()
-		if GM.UI.frame:IsShown() then
-			GM.UI.frame:Hide()
-		else
-			GM.UI.frame:Show()
+	SLASH_GORILMAIL2 = "/gmail"
+	SlashCmdList.GORILMAIL = function(msg)
+		local cmd = strtrim(strlower(tostring(msg or "")))
+		if cmd == "destroy" then
+			if GM.Destroy and GM.Destroy.Toggle then
+				GM.Destroy.Toggle()
+				return
+			end
+			if GM and GM.Utils and GM.Utils.PrintInfo then
+				GM.Utils.PrintInfo("Destroy unavailable")
+			end
+			return
+		end
+		if GM and GM.Utils and GM.Utils.PrintInfo then
+			GM.Utils.PrintInfo("Usage: /gmail destroy or /gorilmail destroy")
 		end
 	end
 end
