@@ -18,6 +18,8 @@ local state = {
 	selectedRowKey = nil,
 	selectedIndex = 1,
 	skipAdvanceCount = 0,
+	destroyClickLockUntil = 0,
+	destroyClickLockRowKey = nil,
 }
 
 local function GetSpellNameSafe(spellID)
@@ -44,7 +46,8 @@ local function UpdateTopInfo()
 	local known = state.knownSpells or {}
 	local de = known.knowsDisenchant and "Yes" or "No"
 	local mill = known.knowsMill and "Yes" or "No"
-	state.frame.infoText:SetText("Disenchant spell: " .. de .. " | Milling spell: " .. mill)
+	local prospect = known.knowsProspect and "Yes" or "No"
+	state.frame.infoText:SetText("Disenchant spell: " .. de .. " | Milling spell: " .. mill .. " | Prospecting spell: " .. prospect)
 end
 
 local function UpdateSummaryText()
@@ -66,6 +69,12 @@ local function ConfigureDestroyButton()
 	end
 	local button = state.frame.destroyNextButton
 	local candidate = state.currentCandidate
+	local now = (GetTime and GetTime()) or 0
+
+	if (tonumber(state.destroyClickLockUntil) or 0) > 0 and now >= state.destroyClickLockUntil then
+		state.destroyClickLockUntil = 0
+		state.destroyClickLockRowKey = nil
+	end
 
 	if InCombatLockdown and InCombatLockdown() then
 		button:SetEnabled(false)
@@ -77,6 +86,11 @@ local function ConfigureDestroyButton()
 		button:SetEnabled(false)
 		button:SetAttribute("type", nil)
 		button:SetAttribute("macrotext", nil)
+		return
+	end
+
+	if (tonumber(state.destroyClickLockUntil) or 0) > now then
+		button:SetEnabled(false)
 		return
 	end
 
@@ -125,6 +139,10 @@ local function UpdateActionState()
 	state.selectedIndex = selectedIndex or 1
 	state.currentCandidate = (selectedIndex and state.dataRows[selectedIndex]) or nil
 	state.selectedRowKey = state.currentCandidate and state.currentCandidate.rowKey or nil
+	if state.destroyClickLockRowKey and state.selectedRowKey ~= state.destroyClickLockRowKey then
+		state.destroyClickLockUntil = 0
+		state.destroyClickLockRowKey = nil
+	end
 	ConfigureDestroyButton()
 	if state.frame.nextText then
 		if state.currentCandidate then
@@ -180,7 +198,7 @@ local function RefreshData()
 	if not GM.DestroyScan or not GM.DestroyScan.Scan then
 		state.dataRows = {}
 		state.summary = { ready = 0, skipped = 0, blocked = 0 }
-		state.knownSpells = { knowsDisenchant = false, knowsMill = false }
+		state.knownSpells = { knowsDisenchant = false, knowsMill = false, knowsProspect = false }
 		UpdateTopInfo()
 		UpdateSummaryText()
 		UpdateActionState()
@@ -192,7 +210,7 @@ local function RefreshData()
 	local rows, summary, known = GM.DestroyScan.Scan()
 	state.dataRows = rows or {}
 	state.summary = summary or { ready = 0, skipped = 0, blocked = 0 }
-	state.knownSpells = known or { knowsDisenchant = false, knowsMill = false }
+	state.knownSpells = known or { knowsDisenchant = false, knowsMill = false, knowsProspect = false }
 
 	UpdateTopInfo()
 	UpdateSummaryText()
@@ -280,7 +298,7 @@ local function CreateDestroyFrame()
 
 	local infoText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	infoText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -36, -14)
-	infoText:SetText("DE: - | Mill: -")
+	infoText:SetText("DE: - | Mill: - | Prospect: -")
 	infoText:SetTextColor(0.78, 0.86, 1.0)
 	frame.infoText = infoText
 
@@ -397,9 +415,15 @@ local function CreateDestroyFrame()
 	destroyNextButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -14, 14)
 	destroyNextButton:SetText("Destroy Next")
 	destroyNextButton:SetEnabled(false)
-	destroyNextButton:RegisterForClicks("AnyUp")
-	destroyNextButton:SetScript("PostClick", function()
+	destroyNextButton:RegisterForClicks("LeftButtonUp")
+	destroyNextButton:SetScript("PostClick", function(self)
 		local c = state.currentCandidate
+		local now = (GetTime and GetTime()) or 0
+		state.destroyClickLockUntil = now + 0.45
+		state.destroyClickLockRowKey = c and c.rowKey or nil
+		if not (InCombatLockdown and InCombatLockdown()) then
+			self:SetEnabled(false)
+		end
 		if c then
 			SetStatusText("Destroy sent: " .. tostring(c.itemName or "-") .. " (" .. tostring(c.destroyType or "-") .. ")")
 		else
