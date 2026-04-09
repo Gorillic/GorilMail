@@ -235,6 +235,7 @@ local THEME = (ACTIVE_THEME and ACTIVE_THEME.colors) or {}
 local THEME_TEXT = (ACTIVE_THEME and ACTIVE_THEME.text) or {}
 local THEME_STATUS = (ACTIVE_THEME and ACTIVE_THEME.status) or {}
 local THEME_TOKENS = (ACTIVE_THEME and ACTIVE_THEME.tokens) or {}
+local DETAIL_BODY_TEXT_FALLBACK = { 0.93, 0.93, 0.93, 1 }
 local ApplyThemeToUI
 local UpdateThemeToggleVisual
 
@@ -884,6 +885,14 @@ local function ApplyFontStringColor(target, color)
 	end
 end
 
+local function ResolveDetailBodyTextColor()
+	local color = THEME_TEXT and THEME_TEXT.detailBody
+	if type(color) == "table" and color[1] and color[2] and color[3] then
+		return color
+	end
+	return DETAIL_BODY_TEXT_FALLBACK
+end
+
 local function ApplyFontColorGroup(targets, color)
 	for i = 1, #targets do
 		ApplyFontStringColor(targets[i], color)
@@ -971,7 +980,7 @@ ApplyThemeToUI = function()
 		GM.UI.detailBodyFrame:SetBackdropBorderColor(unpack(THEME.detailBodyBorder))
 	end
 	if GM.UI.detailBodyText then
-		ApplyFontStringColor(GM.UI.detailBodyText, THEME_TEXT.detailBody)
+		ApplyFontStringColor(GM.UI.detailBodyText, ResolveDetailBodyTextColor())
 	end
 	if GM.UI.sendPanel then
 		ApplyPanelSurfaceStyle(GM.UI.sendPanel, THEME.surfaceBg, THEME.listBorder, THEME.title)
@@ -2865,6 +2874,21 @@ local function GetDetailItemDisplayName(itemName, itemLink)
 	return "Attached Item"
 end
 
+local function SyncDetailBodyLayout(resetScroll)
+	if not GM.UI or not GM.UI.detailBodyScroll or not GM.UI.detailBodyChild or not GM.UI.detailBodyText then
+		return
+	end
+	local scrollWidth = GM.UI.detailBodyScroll:GetWidth() or 1
+	local scrollHeight = GM.UI.detailBodyScroll:GetHeight() or 1
+	local childWidth = math.max(1, scrollWidth - 2)
+	local contentHeight = (GM.UI.detailBodyText:GetStringHeight() or 0) + 12
+	GM.UI.detailBodyChild:SetWidth(childWidth)
+	GM.UI.detailBodyChild:SetHeight(math.max(scrollHeight, contentHeight))
+	if resetScroll then
+		GM.UI.detailBodyScroll:SetVerticalScroll(0)
+	end
+end
+
 local function UpdateDetailPanel(rows)
 	if not GM.UI or not GM.UI.detailPanel then
 		return
@@ -2974,10 +2998,7 @@ local function UpdateDetailPanel(rows)
 	if GM.UI.detailBodyText and GM.UI.detailBodyChild and GM.UI.detailBodyScroll then
 		local bodyText = BuildDetailBodyText(row.index)
 		GM.UI.detailBodyText:SetText(bodyText)
-		local scrollHeight = GM.UI.detailBodyScroll:GetHeight() or 1
-		local contentHeight = (GM.UI.detailBodyText:GetStringHeight() or 0) + 12
-		GM.UI.detailBodyChild:SetHeight(math.max(scrollHeight, contentHeight))
-		GM.UI.detailBodyScroll:SetVerticalScroll(0)
+		SyncDetailBodyLayout(true)
 	end
 
 	if GM.UI.detailCollectButton then
@@ -4854,9 +4875,17 @@ local function BuildDetailPanelBodySection(detailPanel, detailMetaText)
 	detailBodyText:SetJustifyH("LEFT")
 	detailBodyText:SetJustifyV("TOP")
 	detailBodyText:SetWordWrap(true)
-	detailBodyText:SetTextColor(unpack(THEME_TEXT.detailBody))
+	detailBodyText:SetTextColor(unpack(ResolveDetailBodyTextColor()))
 	detailBodyText:SetText("Select a mail row to read.")
 	GM.UI.detailBodyText = detailBodyText
+
+	detailBodyScroll:SetScript("OnSizeChanged", function()
+		SyncDetailBodyLayout(false)
+	end)
+	detailBodyFrame:SetScript("OnSizeChanged", function()
+		SyncDetailBodyLayout(false)
+	end)
+	SyncDetailBodyLayout(false)
 end
 
 local function BuildDetailPanel()

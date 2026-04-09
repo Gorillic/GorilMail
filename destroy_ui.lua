@@ -43,11 +43,7 @@ local function UpdateTopInfo()
 	if not state.frame or not state.frame.infoText then
 		return
 	end
-	local known = state.knownSpells or {}
-	local de = known.knowsDisenchant and "Yes" or "No"
-	local mill = known.knowsMill and "Yes" or "No"
-	local prospect = known.knowsProspect and "Yes" or "No"
-	state.frame.infoText:SetText("Disenchant spell: " .. de .. " | Milling spell: " .. mill .. " | Prospecting spell: " .. prospect)
+	state.frame.infoText:SetText("")
 end
 
 local function UpdateSummaryText()
@@ -298,7 +294,8 @@ local function CreateDestroyFrame()
 
 	local infoText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	infoText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -36, -14)
-	infoText:SetText("DE: - | Mill: - | Prospect: -")
+	infoText:SetJustifyH("RIGHT")
+	infoText:SetText("")
 	infoText:SetTextColor(0.78, 0.86, 1.0)
 	frame.infoText = infoText
 
