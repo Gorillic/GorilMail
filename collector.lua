@@ -16,6 +16,8 @@ local sessionResult = {
 	collectedMoney = 0,
 	collectedMailCount = 0,
 	collectedItemCount = 0,
+	invoiceBuySpent = 0,
+	invoiceSaleCollected = 0,
 	skippedCount = 0,
 	preblockedCount = 0,
 	skippedCODCount = 0,
@@ -163,6 +165,8 @@ local function ResetPreparedData()
 	sessionResult.collectedMoney = 0
 	sessionResult.collectedMailCount = 0
 	sessionResult.collectedItemCount = 0
+	sessionResult.invoiceBuySpent = 0
+	sessionResult.invoiceSaleCollected = 0
 	sessionResult.skippedCount = 0
 	sessionResult.preblockedCount = 0
 	sessionResult.skippedCODCount = 0
@@ -273,12 +277,48 @@ local function GetInboxAttachmentNameAndCount(mailIndex)
 	return itemName, count
 end
 
+local function GetAuctionBuyInvoiceTotalAndQty(mailIndex, fallbackQuantity)
+	if not GetInboxInvoiceInfo or not mailIndex then
+		return false, 0, fallbackQuantity
+	end
+	local invoiceType, _, _, bid, buyout, _, _, _, _, itemCount = GetInboxInvoiceInfo(mailIndex)
+	if tostring(invoiceType or "") ~= "buyer" then
+		return false, 0, fallbackQuantity
+	end
+	local totalPaid = tonumber(bid) or 0
+	if totalPaid <= 0 then
+		totalPaid = tonumber(buyout) or 0
+	end
+	if totalPaid < 0 then
+		totalPaid = 0
+	end
+	local quantity = tonumber(itemCount) or tonumber(fallbackQuantity) or 1
+	if quantity <= 0 then
+		quantity = 1
+	end
+	return true, math.floor(totalPaid), math.floor(quantity)
+end
+
 local function NormalizeFeedbackQuantity(value)
 	local count = tonumber(value)
 	if not count or count <= 0 then
 		return 1
 	end
 	return math.floor(count)
+end
+
+local function ResolveFeedbackMoneyValue(action)
+	if not action then
+		return 0
+	end
+	if action.invoiceBuyerAuction and (tonumber(action.invoicePaidTotal) or 0) > 0 then
+		return math.floor(tonumber(action.invoicePaidTotal) or 0)
+	end
+	local moneyValue = tonumber(action.money) or tonumber(action.value) or 0
+	if moneyValue <= 0 then
+		return 0
+	end
+	return math.floor(moneyValue)
 end
 
 local function BuildCollectFeedback(action)
@@ -289,9 +329,17 @@ local function BuildCollectFeedback(action)
 	local itemHex = "E8E0CF"
 	local countHex = "C9D4E6"
 	local moneyHex = "F0C35A"
-	local moneyText = Colorize(moneyHex, FormatMoneyText(action.money or action.value))
+	if action.invoiceBuyerAuction then
+		moneyHex = "FF4D4D"
+	elseif action.invoiceSellerAuction then
+		moneyHex = "6BE36B"
+	end
+	local moneyText = Colorize(moneyHex, FormatMoneyText(ResolveFeedbackMoneyValue(action)))
 	local itemName = tostring(action.itemName or "")
 	local itemCount = NormalizeFeedbackQuantity(action.itemCount)
+	if action.invoiceBuyerAuction and (tonumber(action.invoiceQty) or 0) > 0 then
+		itemCount = NormalizeFeedbackQuantity(action.invoiceQty)
+	end
 	local subjectName = ParseItemContextFromSubject(action.subject)
 
 	if itemName == "" and subjectName and subjectName ~= "" then
@@ -429,6 +477,8 @@ local function BuildSessionSnapshot(finalState, abortReason)
 		finalSkippedCount = finalSkippedCount,
 		finalFailedCount = finalFailedCount,
 		collectedMailCount = sessionResult.collectedMailCount or 0,
+		invoiceBuySpent = sessionResult.invoiceBuySpent or 0,
+		invoiceSaleCollected = sessionResult.invoiceSaleCollected or 0,
 		skippedCount = sessionResult.skippedCount or 0,
 		preblockedCount = sessionResult.preblockedCount or 0,
 		softRecoveryCount = sessionResult.softRecoveryCount or 0,
@@ -860,6 +910,15 @@ local function CompletePendingActionSuccess(rows, tag)
 		sessionResult.collectedItemCount = sessionResult.collectedItemCount + 1
 		sessionResult.collectedMailCount = sessionResult.collectedMailCount + 1
 	end
+	if pendingAction.invoiceBuyerAuction and (tonumber(pendingAction.invoicePaidTotal) or 0) > 0 then
+		sessionResult.invoiceBuySpent = (sessionResult.invoiceBuySpent or 0) + (tonumber(pendingAction.invoicePaidTotal) or 0)
+	end
+	if pendingAction.invoiceSellerAuction then
+		local saleMoney = tonumber(pendingAction.money) or tonumber(pendingAction.value) or 0
+		if saleMoney > 0 then
+			sessionResult.invoiceSaleCollected = (sessionResult.invoiceSaleCollected or 0) + saleMoney
+		end
+	end
 	local feedback = BuildCollectFeedback(pendingAction)
 	if feedback and feedback ~= "" then
 		PrintSuccess(feedback)
@@ -1014,10 +1073,15 @@ function AdvanceQueue(rows)
 			runtimeState = "collecting"
 			if row.hasItem then
 				local itemName, itemCount = GetInboxAttachmentNameAndCount(row.index)
+				local invoiceBuyerAuction, invoicePaidTotal, invoiceQty = GetAuctionBuyInvoiceTotalAndQty(row.index, itemCount)
 				pendingAction = {
 					kind = (row.money and row.money > 0) and "itemMoney" or "item",
 					value = row.subject or "-",
 					money = row.money or 0,
+					invoiceBuyerAuction = invoiceBuyerAuction and true or false,
+					invoiceSellerAuction = false,
+					invoicePaidTotal = invoicePaidTotal or 0,
+					invoiceQty = invoiceQty or itemCount,
 					itemName = itemName,
 					itemCount = itemCount,
 					subject = row.subject,
@@ -1035,10 +1099,13 @@ function AdvanceQueue(rows)
 				return
 			end
 			if row.money and row.money > 0 then
+				local invoiceType = GetInboxInvoiceInfo and GetInboxInvoiceInfo(row.index) or nil
 				pendingAction = {
 					kind = "money",
 					value = row.money,
 					money = row.money,
+					invoiceBuyerAuction = false,
+					invoiceSellerAuction = (tostring(invoiceType or "") == "seller"),
 					subject = row.subject,
 					index = row.index,
 					identityFingerprint = BuildIdentityFingerprint(row),
@@ -1248,26 +1315,16 @@ EmitFinalSummary = function(finalState, abortReason)
 	end
 	finalSummaryEmitted = true
 	local snapshot = BuildSessionSnapshot(finalState, abortReason)
-	local summary = "Collect All "
-		.. (snapshot.finalState == "completed" and "done" or "stopped")
-		.. ": " .. tostring(snapshot.completedCount or 0) .. "/" .. tostring(snapshot.preparedCount)
-		.. " | Collected " .. tostring(snapshot.finalSuccessCount or 0)
-		.. " | Skipped " .. tostring(snapshot.finalSkippedCount or 0)
-	if (snapshot.finalFailedCount or 0) > 0 then
-		summary = summary .. " | Failed " .. tostring(snapshot.finalFailedCount)
-	end
-	if (snapshot.preblockedCount or 0) > 0 then
-		summary = summary .. " | Preblocked " .. tostring(snapshot.preblockedCount)
-	end
-	if snapshot.finalState == "error" and snapshot.abortReason and snapshot.abortReason ~= "" then
-		summary = summary .. " | Reason: " .. tostring(snapshot.abortReason)
-	end
 	if snapshot.finalState == "completed" then
-		PrintInfo(summary)
-	else
-		PrintError(summary)
+		local buySpent = tonumber(snapshot.invoiceBuySpent) or 0
+		local saleCollected = tonumber(snapshot.invoiceSaleCollected) or 0
+		if buySpent > 0 or saleCollected > 0 then
+			local spentText = Colorize("FF4D4D", FormatMoneyText(buySpent))
+			local saleText = Colorize("6BE36B", FormatMoneyText(saleCollected))
+			PrintInfo("Invoice Totals | Bought(spent): " .. spentText .. " | Sold(received): " .. saleText)
+		end
 	end
-	DebugLog("summary", summary)
+	DebugLog("summary", "finalState=" .. tostring(snapshot.finalState or "unknown"))
 end
 
 eventFrame:RegisterEvent("MAIL_INBOX_UPDATE")

@@ -22,6 +22,46 @@ local state = {
 	destroyClickLockRowKey = nil,
 }
 
+local function BuildSpellStateLine(label, isKnown)
+	if isKnown then
+		return "|cff71d26b" .. tostring(label) .. " [OK]|r"
+	end
+	return "|cffe06a6a" .. tostring(label) .. " [X]|r"
+end
+
+local function ResolveActiveSpellStateLabel()
+	local known = state.knownSpells or {}
+	local candidate = state.currentCandidate
+	if candidate and candidate.destroyType then
+		if candidate.destroyType == "Disenchant" then
+			return "Disenchant", known.knowsDisenchant
+		end
+		if candidate.destroyType == "Mill" then
+			return "Milling", known.knowsMill
+		end
+		if candidate.destroyType == "Midnight Mill" then
+			return "Midnight Milling", known.knowsMidnightMill
+		end
+		if candidate.destroyType == "Prospect" then
+			return "Prospecting", known.knowsProspect
+		end
+	end
+
+	if known.knowsMill then
+		return "Milling", true
+	end
+	if known.knowsMidnightMill then
+		return "Midnight Milling", true
+	end
+	if known.knowsDisenchant then
+		return "Disenchant", true
+	end
+	if known.knowsProspect then
+		return "Prospecting", true
+	end
+	return "No destroy spell", false
+end
+
 local function GetSpellNameSafe(spellID)
 	if C_Spell and C_Spell.GetSpellInfo then
 		local info = C_Spell.GetSpellInfo(spellID)
@@ -43,7 +83,8 @@ local function UpdateTopInfo()
 	if not state.frame or not state.frame.infoText then
 		return
 	end
-	state.frame.infoText:SetText("")
+	local label, isKnown = ResolveActiveSpellStateLabel()
+	state.frame.infoText:SetText(BuildSpellStateLine(label, isKnown))
 end
 
 local function UpdateSummaryText()
@@ -64,6 +105,7 @@ local function ConfigureDestroyButton()
 		return
 	end
 	local button = state.frame.destroyNextButton
+	local midnightButton = state.frame.midnightDestroyButton
 	local candidate = state.currentCandidate
 	local now = (GetTime and GetTime()) or 0
 
@@ -74,21 +116,62 @@ local function ConfigureDestroyButton()
 
 	if InCombatLockdown and InCombatLockdown() then
 		button:SetEnabled(false)
-		SetStatusText("Combat lockdown: action disabled")
+		button:SetShown(true)
+		button:SetAttribute("type", nil)
+		button:SetAttribute("macrotext", nil)
+		if midnightButton then
+			midnightButton:SetEnabled(false)
+			midnightButton:Hide()
+		end
+		SetStatusText("In combat: action disabled")
 		return
 	end
 
 	if not candidate then
 		button:SetEnabled(false)
+		button:SetShown(true)
 		button:SetAttribute("type", nil)
 		button:SetAttribute("macrotext", nil)
+		if midnightButton then
+			midnightButton:SetEnabled(false)
+			midnightButton:Hide()
+		end
 		return
 	end
 
 	if (tonumber(state.destroyClickLockUntil) or 0) > now then
 		button:SetEnabled(false)
+		if midnightButton then
+			midnightButton:SetEnabled(false)
+		end
 		return
 	end
+
+	if candidate.useSalvage then
+		button:SetEnabled(false)
+		button:SetShown(false)
+		button:SetAttribute("type", nil)
+		button:SetAttribute("macrotext", nil)
+		if not midnightButton then
+			SetStatusText("Midnight milling unavailable")
+			return
+		end
+		if not (C_TradeSkillUI and C_TradeSkillUI.CraftSalvage and ItemLocation and ItemLocation.CreateFromBagAndSlot) then
+			midnightButton:SetEnabled(false)
+			midnightButton:Show()
+			SetStatusText("Midnight milling unavailable")
+			return
+		end
+		midnightButton:SetEnabled(true)
+		midnightButton:Show()
+		return
+	end
+
+	if midnightButton then
+		midnightButton:SetEnabled(false)
+		midnightButton:Hide()
+	end
+	button:SetShown(true)
 
 	local spellName = GetSpellNameSafe(candidate.spellID)
 	if not spellName then
@@ -103,6 +186,27 @@ local function ConfigureDestroyButton()
 	button:SetAttribute("type", "macro")
 	button:SetAttribute("macrotext", macro)
 	button:SetEnabled(true)
+end
+
+local function TriggerSalvageDestroy(candidate)
+	if not candidate or not candidate.useSalvage then
+		return false, "Invalid salvage candidate"
+	end
+	if InCombatLockdown and InCombatLockdown() then
+		return false, "In combat: action disabled"
+	end
+	if not (C_TradeSkillUI and C_TradeSkillUI.CraftSalvage and ItemLocation and ItemLocation.CreateFromBagAndSlot) then
+		return false, "Midnight milling unavailable"
+	end
+	local location = ItemLocation:CreateFromBagAndSlot(candidate.bagID, candidate.slot)
+	if not location then
+		return false, "Invalid bag slot target"
+	end
+	local ok, err = pcall(C_TradeSkillUI.CraftSalvage, candidate.spellID, 1, location)
+	if not ok then
+		return false, tostring(err or "CraftSalvage failed")
+	end
+	return true, nil
 end
 
 local function FindRowIndexByKey(rowKey)
@@ -152,6 +256,7 @@ local function UpdateActionState()
 	if state.frame.skipButton then
 		state.frame.skipButton:SetEnabled(state.currentCandidate ~= nil and #state.dataRows > 1)
 	end
+	UpdateTopInfo()
 end
 
 local function RenderVisibleRows()
@@ -171,7 +276,12 @@ local function RenderVisibleRows()
 			rowFrame.rowKey = row.rowKey
 			rowFrame.itemLink = row.itemLink
 			rowFrame.icon:SetTexture(GetItemIcon(row.itemID or 0))
-			rowFrame.name:SetText(tostring(row.itemName or "-"))
+			local count = tonumber(row.itemCount) or 0
+			if count > 1 then
+				rowFrame.name:SetText(tostring(row.itemName or "-") .. " x" .. tostring(count))
+			else
+				rowFrame.name:SetText(tostring(row.itemName or "-"))
+			end
 			if row.rowKey and row.rowKey == state.selectedRowKey then
 				rowFrame.bg:SetColorTexture(0.13, 0.20, 0.10, 0.45)
 			else
@@ -194,8 +304,7 @@ local function RefreshData()
 	if not GM.DestroyScan or not GM.DestroyScan.Scan then
 		state.dataRows = {}
 		state.summary = { ready = 0, skipped = 0, blocked = 0 }
-		state.knownSpells = { knowsDisenchant = false, knowsMill = false, knowsProspect = false }
-		UpdateTopInfo()
+		state.knownSpells = { knowsDisenchant = false, knowsMill = false, knowsMidnightMill = false, knowsProspect = false }
 		UpdateSummaryText()
 		UpdateActionState()
 		RenderVisibleRows()
@@ -206,9 +315,8 @@ local function RefreshData()
 	local rows, summary, known = GM.DestroyScan.Scan()
 	state.dataRows = rows or {}
 	state.summary = summary or { ready = 0, skipped = 0, blocked = 0 }
-	state.knownSpells = known or { knowsDisenchant = false, knowsMill = false, knowsProspect = false }
+	state.knownSpells = known or { knowsDisenchant = false, knowsMill = false, knowsMidnightMill = false, knowsProspect = false }
 
-	UpdateTopInfo()
 	UpdateSummaryText()
 	UpdateActionState()
 	RenderVisibleRows()
@@ -416,7 +524,7 @@ local function CreateDestroyFrame()
 	destroyNextButton:SetScript("PostClick", function(self)
 		local c = state.currentCandidate
 		local now = (GetTime and GetTime()) or 0
-		state.destroyClickLockUntil = now + 0.45
+		state.destroyClickLockUntil = now + 0.20
 		state.destroyClickLockRowKey = c and c.rowKey or nil
 		if not (InCombatLockdown and InCombatLockdown()) then
 			self:SetEnabled(false)
@@ -428,6 +536,30 @@ local function CreateDestroyFrame()
 		end
 	end)
 	frame.destroyNextButton = destroyNextButton
+
+	local midnightDestroyButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	midnightDestroyButton:SetSize(96, 22)
+	midnightDestroyButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -14, 14)
+	midnightDestroyButton:SetText("Destroy Next")
+	midnightDestroyButton:SetEnabled(false)
+	midnightDestroyButton:Hide()
+	midnightDestroyButton:SetScript("OnClick", function(self)
+		local c = state.currentCandidate
+		if not c or not c.useSalvage then
+			return
+		end
+		local now = (GetTime and GetTime()) or 0
+		state.destroyClickLockUntil = now + 0.20
+		state.destroyClickLockRowKey = c.rowKey
+		self:SetEnabled(false)
+		local ok, err = TriggerSalvageDestroy(c)
+		if ok then
+			SetStatusText("Destroy sent: " .. tostring(c.itemName or "-") .. " (" .. tostring(c.destroyType or "-") .. ")")
+			return
+		end
+		SetStatusText("Destroy failed: " .. tostring(err or "unknown error"))
+	end)
+	frame.midnightDestroyButton = midnightDestroyButton
 
 	frame:SetScript("OnShow", function()
 		state.skipAdvanceCount = 0

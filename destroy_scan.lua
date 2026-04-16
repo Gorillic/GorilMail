@@ -5,10 +5,12 @@ GM.DestroyScan = GM.DestroyScan or {}
 
 local SPELL_DISENCHANT = 13262
 local SPELL_MILL = 51005
+local SPELL_MIDNIGHT_MILL = 1269575
 local SPELL_PROSPECTING = 31252
 local MAX_BAG_ID = 4
 local ROW_TYPE_DISENCHANT = "Disenchant"
 local ROW_TYPE_MILL = "Mill"
+local ROW_TYPE_MIDNIGHT_MILL = "Midnight Mill"
 local ROW_TYPE_PROSPECT = "Prospect"
 
 local ITEM_QUALITY_UNCOMMON = (Enum and Enum.ItemQuality and Enum.ItemQuality.Uncommon) or 2
@@ -31,6 +33,27 @@ local function IsSpellKnownSafe(spellID)
 	end
 	if IsSpellKnown then
 		return IsSpellKnown(spellID) and true or false
+	end
+	return false
+end
+
+local function IsRecipeKnownSafe(recipeSpellID)
+	if IsSpellKnownSafe(recipeSpellID) then
+		return true
+	end
+	if C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
+		local recipeInfo = C_TradeSkillUI.GetRecipeInfo(recipeSpellID)
+		if type(recipeInfo) == "table" then
+			if recipeInfo.learned ~= nil then
+				return recipeInfo.learned and true or false
+			end
+			if recipeInfo.isLearned ~= nil then
+				return recipeInfo.isLearned and true or false
+			end
+			if recipeInfo.unlocked ~= nil then
+				return recipeInfo.unlocked and true or false
+			end
+		end
 	end
 	return false
 end
@@ -116,11 +139,17 @@ local function IsProspectableByItemData(classInfo)
 	return classInfo.classID == ITEM_CLASS_TRADEGOODS and classInfo.subClassID == ITEM_SUBCLASS_METAL_AND_STONE
 end
 
-local function GetDestroyTypeData(classInfo, quality)
+local function GetDestroyTypeData(classInfo, quality, knownSpells)
 	if IsDisenchantableByItemData(classInfo, quality) then
 		return ROW_TYPE_DISENCHANT, SPELL_DISENCHANT, 1
 	end
 	if IsMillableByItemData(classInfo) then
+		if knownSpells and knownSpells.knowsMill then
+			return ROW_TYPE_MILL, SPELL_MILL, 5
+		end
+		if knownSpells and knownSpells.knowsMidnightMill then
+			return ROW_TYPE_MIDNIGHT_MILL, SPELL_MIDNIGHT_MILL, 10
+		end
 		return ROW_TYPE_MILL, SPELL_MILL, 5
 	end
 	if IsProspectableByItemData(classInfo) then
@@ -154,6 +183,7 @@ function GM.DestroyScan.Scan()
 	local knownSpells = {
 		knowsDisenchant = IsSpellKnownSafe(SPELL_DISENCHANT),
 		knowsMill = IsSpellKnownSafe(SPELL_MILL),
+		knowsMidnightMill = IsRecipeKnownSafe(SPELL_MIDNIGHT_MILL),
 		knowsProspect = IsSpellKnownSafe(SPELL_PROSPECTING),
 	}
 
@@ -164,11 +194,12 @@ function GM.DestroyScan.Scan()
 			if slotInfo and slotInfo.itemID and (slotInfo.count or 0) > 0 then
 				local classInfo = GetItemClassInfo(slotInfo.link, slotInfo.itemID)
 				local itemName, _, quality = GetItemInfo(slotInfo.link or ("item:" .. tostring(slotInfo.itemID)))
-				local destroyType, spellID, minQuantity = GetDestroyTypeData(classInfo, quality)
+				local destroyType, spellID, minQuantity = GetDestroyTypeData(classInfo, quality, knownSpells)
 				if destroyType then
 					summary.candidates = summary.candidates + 1
 					local knowsSpell = (spellID == SPELL_DISENCHANT and knownSpells.knowsDisenchant)
 						or (spellID == SPELL_MILL and knownSpells.knowsMill)
+						or (spellID == SPELL_MIDNIGHT_MILL and knownSpells.knowsMidnightMill)
 						or (spellID == SPELL_PROSPECTING and knownSpells.knowsProspect)
 					local hasQuantity = (slotInfo.count or 0) >= (minQuantity or 1)
 					if knowsSpell and hasQuantity then
@@ -178,10 +209,12 @@ function GM.DestroyScan.Scan()
 							bagID = bagID,
 							slot = slot,
 							itemID = slotInfo.itemID,
+							itemCount = slotInfo.count or 0,
 							itemLink = slotInfo.link,
 							itemName = itemName or ("item:" .. tostring(slotInfo.itemID)),
 							destroyType = destroyType,
 							spellID = spellID,
+							useSalvage = (spellID == SPELL_MIDNIGHT_MILL),
 						}
 						summary.ready = summary.ready + 1
 					else
